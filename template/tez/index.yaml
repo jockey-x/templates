@@ -1,0 +1,258 @@
+apiVersion: app.sealos.io/v1
+kind: Template
+metadata:
+  name: tez
+spec:
+  title: 'Apache Tez'
+  url: 'https://tez.apache.org/'
+  gitRepo: 'https://github.com/apache/tez'
+  author: 'Sealos'
+  description: 'Apache Tez is an extensible framework for building high-performance batch and interactive data processing applications on Hadoop YARN.'
+  readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/tez/README.md'
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/tez/logo.svg'
+  templateType: inline
+  locale: en
+  i18n:
+    zh:
+      description: 'Apache Tez 是运行在 Hadoop YARN 上的高性能批处理和交互式数据处理框架。'
+      readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/tez/README_zh.md'
+  categories:
+    - backend
+    - dev-ops
+  defaults:
+    app_name:
+      type: string
+      value: tez-${{ random(8) }}
+  inputs:
+    hdfs_namenode_service:
+      description: 'HDFS NameNode Service name deployed in the same namespace.'
+      type: string
+      default: 'hadoop-namenode'
+      required: true
+    yarn_resourcemanager_service:
+      description: 'YARN ResourceManager Service name deployed in the same namespace.'
+      type: string
+      default: 'hadoop-resourcemanager'
+      required: true
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${{ defaults.app_name }}-config
+  labels:
+    app: ${{ defaults.app_name }}-config
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-config
+data:
+  core-site.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+      <property>
+        <name>fs.defaultFS</name>
+        <value>hdfs://${HDFS_NAMENODE_SERVICE}.${TEZ_NAMESPACE}.svc.cluster.local:8020</value>
+      </property>
+    </configuration>
+  yarn-site.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+      <property>
+        <name>yarn.resourcemanager.hostname</name>
+        <value>${YARN_RESOURCEMANAGER_SERVICE}.${TEZ_NAMESPACE}.svc.cluster.local</value>
+      </property>
+      <property>
+        <name>yarn.resourcemanager.address</name>
+        <value>${YARN_RESOURCEMANAGER_SERVICE}.${TEZ_NAMESPACE}.svc.cluster.local:8032</value>
+      </property>
+      <property>
+        <name>yarn.resourcemanager.scheduler.address</name>
+        <value>${YARN_RESOURCEMANAGER_SERVICE}.${TEZ_NAMESPACE}.svc.cluster.local:8030</value>
+      </property>
+    </configuration>
+  tez-site.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+      <property>
+        <name>tez.lib.uris</name>
+        <value>hdfs:///apps/tez/tez-0.10.2.tar.gz</value>
+      </property>
+      <property>
+        <name>tez.use.cluster.hadoop-libs</name>
+        <value>true</value>
+      </property>
+      <property>
+        <name>tez.am.resource.memory.mb</name>
+        <value>512</value>
+      </property>
+      <property>
+        <name>tez.am.launch.cmd-opts</name>
+        <value>-Xmx384m</value>
+      </property>
+      <property>
+        <name>tez.task.resource.memory.mb</name>
+        <value>512</value>
+      </property>
+      <property>
+        <name>tez.task.launch.cmd-opts</name>
+        <value>-Xmx384m</value>
+      </property>
+    </configuration>
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ defaults.app_name }}
+  annotations:
+    originImageName: sealos.hub:5000/u-002/tez:0.10.2
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    app: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: ${{ defaults.app_name }}
+          image: sealos.hub:5000/u-002/tez:0.10.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              : "${TEZ_HOME:=/opt/tez}"
+              : "${HADOOP_HOME:=/opt/hadoop}"
+              export PATH="${HADOOP_HOME}/bin:${PATH}"
+              if [ -z "${JAVA_HOME:-}" ] || [ ! -x "${JAVA_HOME}/bin/java" ]; then
+                JAVA_BIN="$(command -v java)"
+                JAVA_REAL="$(readlink -f "${JAVA_BIN}" 2>/dev/null || realpath "${JAVA_BIN}" 2>/dev/null || echo "${JAVA_BIN}")"
+                export JAVA_HOME="$(dirname "$(dirname "${JAVA_REAL}")")"
+              fi
+              mkdir -p "${HADOOP_CONF_DIR}" "${TEZ_CONF_DIR}"
+              cp /mounted-conf/core-site.xml "${HADOOP_CONF_DIR}/core-site.xml"
+              cp /mounted-conf/yarn-site.xml "${HADOOP_CONF_DIR}/yarn-site.xml"
+              cp /mounted-conf/tez-site.xml "${TEZ_CONF_DIR}/tez-site.xml"
+              sed -i "s#\${HDFS_NAMENODE_SERVICE}#${HDFS_NAMENODE_SERVICE}#g" "${HADOOP_CONF_DIR}/core-site.xml"
+              sed -i "s#\${YARN_RESOURCEMANAGER_SERVICE}#${YARN_RESOURCEMANAGER_SERVICE}#g" "${HADOOP_CONF_DIR}/yarn-site.xml"
+              sed -i "s#\${TEZ_NAMESPACE}#${TEZ_NAMESPACE}#g" "${HADOOP_CONF_DIR}/core-site.xml" "${HADOOP_CONF_DIR}/yarn-site.xml"
+              printf '%s\n' "export JAVA_HOME=${JAVA_HOME}" > "${HADOOP_CONF_DIR}/hadoop-env.sh"
+              until (echo >"/dev/tcp/${HDFS_NAMENODE_SERVICE}.${TEZ_NAMESPACE}.svc.cluster.local/8020") >/dev/null 2>&1; do
+                echo waiting for hdfs namenode
+                sleep 5
+              done
+              hdfs dfs -mkdir -p /apps/tez
+              if [ -f "${TEZ_HOME}/tez.tar.gz" ]; then
+                hdfs dfs -put -f "${TEZ_HOME}/tez.tar.gz" /apps/tez/tez-0.10.2.tar.gz
+              elif [ -f "${TEZ_HOME}/share/tez.tar.gz" ]; then
+                hdfs dfs -put -f "${TEZ_HOME}/share/tez.tar.gz" /apps/tez/tez-0.10.2.tar.gz
+              else
+                tar -C "${TEZ_HOME}" -czf /tmp/tez.tar.gz .
+                hdfs dfs -put -f /tmp/tez.tar.gz /apps/tez/tez-0.10.2.tar.gz
+              fi
+              exec tail -f /dev/null
+          env:
+            - name: TEZ_HOME
+              value: /opt/tez
+            - name: TEZ_CONF_DIR
+              value: /etc/tez
+            - name: HADOOP_HOME
+              value: /opt/hadoop
+            - name: HADOOP_CONF_DIR
+              value: /etc/hadoop
+            - name: HDFS_NAMENODE_SERVICE
+              value: ${{ inputs.hdfs_namenode_service }}
+            - name: YARN_RESOURCEMANAGER_SERVICE
+              value: ${{ inputs.yarn_resourcemanager_service }}
+            - name: TEZ_NAMESPACE
+              value: ${{ SEALOS_NAMESPACE }}
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - test -f /etc/tez/tez-site.xml
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - test -f /etc/tez/tez-site.xml
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - test -f /etc/tez/tez-site.xml
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: vn-mountedvn-conf
+              mountPath: /mounted-conf
+      volumes:
+        - name: vn-mountedvn-conf
+          configMap:
+            name: ${{ defaults.app_name }}-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    app: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: status
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}
+
+---
+apiVersion: app.sealos.io/v1
+kind: App
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  data:
+    url: hdfs:///apps/tez/tez-0.10.2.tar.gz
+  displayType: normal
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/tez/logo.svg'
+  name: Apache Tez
+  type: link

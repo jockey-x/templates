@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Apache Tez">
+  <rect width="128" height="128" rx="24" fill="#0f172a"/>
+  <path d="M28 38h72L72 66h25L46 96l16-24H36l28-34Z" fill="#38bdf8"/>
+  <path d="M64 38 45 64h25L57 87l31-21H64l22-28H64Z" fill="#f8fafc" opacity=".9"/>
+</svg>

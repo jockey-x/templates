@@ -1,0 +1,479 @@
+apiVersion: app.sealos.io/v1
+kind: Template
+metadata:
+  name: doris
+spec:
+  title: 'Apache Doris'
+  url: 'https://doris.apache.org/'
+  gitRepo: 'https://github.com/apache/doris'
+  author: 'Sealos'
+  description: 'Apache Doris is a real-time analytical database for high-performance reporting, ad-hoc queries, and unified data warehousing.'
+  readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/doris/README.md'
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/doris/logo.png'
+  templateType: inline
+  locale: en
+  i18n:
+    zh:
+      description: 'Apache Doris 是面向高性能报表、即席查询和统一数仓场景的实时分析型数据库。'
+      readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/doris/README_zh.md'
+  categories:
+    - database
+    - backend
+  defaults:
+    app_name:
+      type: string
+      value: doris-${{ random(8) }}
+    app_host:
+      type: string
+      value: doris-${{ random(8) }}
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${{ defaults.app_name }}-fe-config
+  labels:
+    app: ${{ defaults.app_name }}-fe-config
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-fe-config
+data:
+  vn-optvn-dorisvn-fevn-confvn-fevn-conf: |
+    LOG_DIR = /opt/doris/fe/log
+    meta_dir = /opt/doris/fe/doris-meta
+    http_port = 8030
+    rpc_port = 9020
+    query_port = 9030
+    edit_log_port = 9010
+    enable_fqdn_mode = true
+    priority_networks = 0.0.0.0/0
+    enable_file_logger = false
+    log_roll_size_mb = 64
+    sys_log_roll_num = 4
+    audit_log_roll_num = 4
+    sys_log_delete_age = 1d
+    audit_log_delete_age = 1d
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${{ defaults.app_name }}-be-config
+  labels:
+    app: ${{ defaults.app_name }}-be-config
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-be-config
+data:
+  vn-optvn-dorisvn-bevn-confvn-bevn-conf: |
+    LOG_DIR = /opt/doris/be/log
+    storage_root_path = /opt/doris/be/storage
+    webserver_port = 8040
+    heartbeat_service_port = 9050
+    brpc_port = 8060
+    be_port = 9060
+    enable_fqdn_mode = true
+    priority_networks = 0.0.0.0/0
+    enable_file_logger = false
+    sys_log_roll_mode = SIZE-MB-64
+    sys_log_roll_num = 4
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${{ defaults.app_name }}-fe
+  annotations:
+    originImageName: quay-kufddygt.sealoshzh.site/u-002/doris:4.1.0-fe
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    app: ${{ defaults.app_name }}-fe
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-fe
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  serviceName: ${{ defaults.app_name }}-fe
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-fe
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-fe
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: ${{ defaults.app_name }}-fe
+          image: quay-kufddygt.sealoshzh.site/u-002/doris:4.1.0-fe
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              mkdir -p /opt/doris/fe/doris-meta /opt/doris/fe/log
+              printf '\n# Sealos runtime configuration\n' >> /opt/doris/fe/conf/fe.conf
+              printf '%s\n' "${DORIS_FE_CONF}" >> /opt/doris/fe/conf/fe.conf
+              exec ./bin/start_fe.sh --console
+          env:
+            - name: DORIS_FE_CONF
+              valueFrom:
+                configMapKeyRef:
+                  name: ${{ defaults.app_name }}-fe-config
+                  key: vn-optvn-dorisvn-fevn-confvn-fevn-conf
+          ports:
+            - name: edit-log
+              containerPort: 9010
+              protocol: TCP
+            - name: rpc
+              containerPort: 9020
+              protocol: TCP
+            - name: mysql
+              containerPort: 9030
+              protocol: TCP
+            - name: webui
+              containerPort: 8030
+              protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: 9030
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8030
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 18
+          livenessProbe:
+            tcpSocket:
+              port: 9030
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 2Gi
+          volumeMounts:
+            - name: vn-optvn-dorisvn-fevn-dorisvn-meta
+              mountPath: /opt/doris/fe/doris-meta
+            - name: vn-optvn-dorisvn-fevn-log
+              mountPath: /opt/doris/fe/log
+  volumeClaimTemplates:
+    - metadata:
+        name: vn-optvn-dorisvn-fevn-dorisvn-meta
+        annotations:
+          path: /opt/doris/fe/doris-meta
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: vn-optvn-dorisvn-fevn-log
+        annotations:
+          path: /opt/doris/fe/log
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-fe
+  labels:
+    app: ${{ defaults.app_name }}-fe
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-fe
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: edit-log
+      port: 9010
+      targetPort: 9010
+      protocol: TCP
+    - name: rpc
+      port: 9020
+      targetPort: 9020
+      protocol: TCP
+    - name: mysql
+      port: 9030
+      targetPort: 9030
+      protocol: TCP
+    - name: webui
+      port: 8030
+      targetPort: 8030
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}-fe
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${{ defaults.app_name }}-be
+  annotations:
+    originImageName: quay-kufddygt.sealoshzh.site/u-002/doris:4.1.0-be
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    app: ${{ defaults.app_name }}-be
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-be
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  serviceName: ${{ defaults.app_name }}-be
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-be
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-be
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: ${{ defaults.app_name }}-be
+          image: quay-kufddygt.sealoshzh.site/u-002/doris:4.1.0-be
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              mkdir -p /opt/doris/be/storage /opt/doris/be/log
+              printf '\n# Sealos runtime configuration\n' >> /opt/doris/be/conf/be.conf
+              printf '%s\n' "${DORIS_BE_CONF}" >> /opt/doris/be/conf/be.conf
+              exec ./bin/start_be.sh --console
+          env:
+            - name: DORIS_BE_CONF
+              valueFrom:
+                configMapKeyRef:
+                  name: ${{ defaults.app_name }}-be-config
+                  key: vn-optvn-dorisvn-bevn-confvn-bevn-conf
+          ports:
+            - name: webui
+              containerPort: 8040
+              protocol: TCP
+            - name: heartbeat
+              containerPort: 9050
+              protocol: TCP
+            - name: brpc
+              containerPort: 8060
+              protocol: TCP
+            - name: rpc
+              containerPort: 9060
+              protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: 9050
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            tcpSocket:
+              port: 9050
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 18
+          livenessProbe:
+            tcpSocket:
+              port: 9050
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 2Gi
+          volumeMounts:
+            - name: vn-optvn-dorisvn-bevn-storage
+              mountPath: /opt/doris/be/storage
+            - name: vn-optvn-dorisvn-bevn-log
+              mountPath: /opt/doris/be/log
+  volumeClaimTemplates:
+    - metadata:
+        name: vn-optvn-dorisvn-bevn-storage
+        annotations:
+          path: /opt/doris/be/storage
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: vn-optvn-dorisvn-bevn-log
+        annotations:
+          path: /opt/doris/be/log
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-be
+  labels:
+    app: ${{ defaults.app_name }}-be
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-be
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: webui
+      port: 8040
+      targetPort: 8040
+      protocol: TCP
+    - name: heartbeat
+      port: 9050
+      targetPort: 9050
+      protocol: TCP
+    - name: brpc
+      port: 8060
+      targetPort: 8060
+      protocol: TCP
+    - name: rpc
+      port: 9060
+      targetPort: 9060
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}-be
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${{ defaults.app_name }}-register-be
+  labels:
+    app: ${{ defaults.app_name }}-register-be
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-register-be
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-register-be
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: OnFailure
+      containers:
+        - name: register-be
+          image: quay-kufddygt.sealoshzh.site/u-002/doris:4.1.0-fe
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              fe_host="${DORIS_FE_SERVICE}.${DORIS_NAMESPACE}.svc.cluster.local"
+              be_host="${DORIS_BE_POD}.${DORIS_BE_SERVICE}.${DORIS_NAMESPACE}.svc.cluster.local"
+              until mysql -h"${fe_host}" -P9030 -uroot -e 'SHOW FRONTENDS;' >/dev/null 2>&1; do
+                echo waiting for Doris FE
+                sleep 5
+              done
+              until (echo >"/dev/tcp/${be_host}/9050") >/dev/null 2>&1; do
+                echo waiting for Doris BE
+                sleep 5
+              done
+              if mysql -h"${fe_host}" -P9030 -uroot -N -B -e 'SHOW BACKENDS;' | awk -v host="${be_host}" '$2 == host && $3 == "9050" { found = 1 } END { exit(found ? 0 : 1) }'; then
+                echo Doris BE is already registered
+              else
+                mysql -h"${fe_host}" -P9030 -uroot -e "ALTER SYSTEM ADD BACKEND \"${be_host}:9050\";"
+              fi
+          env:
+            - name: DORIS_NAMESPACE
+              value: ${{ SEALOS_NAMESPACE }}
+            - name: DORIS_FE_SERVICE
+              value: ${{ defaults.app_name }}-fe
+            - name: DORIS_BE_SERVICE
+              value: ${{ defaults.app_name }}-be
+            - name: DORIS_BE_POD
+              value: ${{ defaults.app_name }}-be-0
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${{ defaults.app_name }}-fe
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-fe
+    cloud.sealos.io/app-deploy-manager-domain: ${{ defaults.app_host }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/server-snippet: |
+      client_header_buffer_size 64k;
+      large_client_header_buffers 4 128k;
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/client-body-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '300'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '300'
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      if ($request_uri ~* \.(js|css|gif|jpe?g|png)) {
+        expires 30d;
+        add_header Cache-Control "public";
+      }
+spec:
+  rules:
+    - host: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: ${{ defaults.app_name }}-fe
+                port:
+                  number: 8030
+  tls:
+    - hosts:
+        - ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      secretName: ${{ SEALOS_CERT_SECRET_NAME }}
+
+---
+apiVersion: app.sealos.io/v1
+kind: App
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  data:
+    url: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+  displayType: normal
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/doris/logo.png'
+  name: Apache Doris
+  type: iframe

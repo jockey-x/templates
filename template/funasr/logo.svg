@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">FunASR</title>
+  <desc id="desc">A circular speech waveform icon for FunASR.</desc>
+  <defs>
+    <linearGradient id="bg" x1="38" y1="28" x2="218" y2="228" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#12b981"/>
+      <stop offset="0.52" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="58" y1="128" x2="198" y2="128" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#d7f8ff"/>
+    </linearGradient>
+  </defs>
+  <circle cx="128" cy="128" r="116" fill="url(#bg)"/>
+  <circle cx="128" cy="128" r="88" fill="#07111f" opacity="0.2"/>
+  <path fill="none" stroke="url(#wave)" stroke-linecap="round" stroke-width="14" d="M60 128h20m18-34v68m26-92v116m26-74v32m26-50v68m26-34h-20"/>
+  <circle cx="128" cy="128" r="102" fill="none" stroke="#ffffff" stroke-opacity="0.24" stroke-width="6"/>
+</svg>

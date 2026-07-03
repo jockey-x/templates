@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Nacos</title>
+  <desc id="desc">A square Nacos service discovery icon.</desc>
+  <defs>
+    <linearGradient id="mark" x1="42" y1="48" x2="214" y2="208" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4285f4"/>
+      <stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="48" fill="#f7fbff"/>
+  <path fill="url(#mark)" d="M128 32c53.02 0 96 42.98 96 96s-42.98 96-96 96-96-42.98-96-96 42.98-96 96-96Zm-4 46a50 50 0 1 0 0 100h26.5a50 50 0 1 0 0-100H124Zm1 36h27a14 14 0 1 1 0 28h-27a14 14 0 1 1 0-28Z"/>
+  <circle cx="198" cy="198" r="14" fill="#22d3ee"/>
+</svg>

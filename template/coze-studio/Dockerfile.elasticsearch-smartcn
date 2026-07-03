@@ -1,0 +1,9 @@
+ARG ELASTICSEARCH_IMAGE=bitnamilegacy/elasticsearch:8.18.0
+
+FROM ${ELASTICSEARCH_IMAGE}
+
+USER 1001
+
+RUN set -eux; \
+    /opt/bitnami/elasticsearch/bin/elasticsearch-plugin install --batch analysis-smartcn; \
+    /opt/bitnami/elasticsearch/bin/elasticsearch-plugin list | grep -x analysis-smartcn

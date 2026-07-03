@@ -67,9 +67,93 @@ spec:
         app: ${{ defaults.app_name }}
     spec:
       automountServiceAccountToken: false
+      initContainers:
+        - name: resolve-rocketmq-namesrv
+          image: busybox:1.37.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              host="${{ defaults.app_name }}-rocketmq-namesrv"
+              port="9876"
+              for i in $(seq 1 120); do
+                ip="$(nslookup "$host" 2>/dev/null | awk '/^Name:/ {found=1; next} found && /^Address: / {print $2; exit} found && /^Address [0-9]+: / {print $3; exit}')"
+                ip="${ip%%:*}"
+                if echo "$ip" | grep -Eq '^[0-9]+(\.[0-9]+){3}$'; then
+                  echo "MQ_NAME_SERVER=${ip}:${port}" > /rocketmq-runtime/env
+                  cat /rocketmq-runtime/env
+                  exit 0
+                fi
+                echo "waiting for rocketmq namesrv DNS, retry $i/120..."
+                sleep 1
+              done
+              echo "ERROR: could not resolve rocketmq namesrv service."
+              exit 1
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+          volumeMounts:
+            - name: ${{ defaults.app_name }}-rocketmq-runtime
+              mountPath: /rocketmq-runtime
+        - name: init-rocketmq
+          image: apache/rocketmq:5.3.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -ex
+              NAMESRV_ADDR="${{ defaults.app_name }}-rocketmq-namesrv:9876"
+              for i in {1..120}; do
+                if /home/rocketmq/rocketmq-5.3.2/bin/mqadmin clusterList -n "$NAMESRV_ADDR" | grep -q "DefaultCluster.*broker-a"; then
+                  echo "RocketMQ broker is ready."
+                  break
+                fi
+                echo "waiting for rocketmq broker, retry $i/120..."
+                sleep 2
+                if [ "$i" = "120" ]; then
+                  echo "ERROR: rocketmq broker is not ready."
+                  exit 1
+                fi
+              done
+
+              echo "Creating RocketMQ topics..."
+              /home/rocketmq/rocketmq-5.3.2/bin/mqadmin updateTopic -n "$NAMESRV_ADDR" -c DefaultCluster -t "opencoze_knowledge"
+              /home/rocketmq/rocketmq-5.3.2/bin/mqadmin updateTopic -n "$NAMESRV_ADDR" -c DefaultCluster -t "opencoze_search_app"
+              /home/rocketmq/rocketmq-5.3.2/bin/mqadmin updateTopic -n "$NAMESRV_ADDR" -c DefaultCluster -t "opencoze_search_resource"
+              /home/rocketmq/rocketmq-5.3.2/bin/mqadmin updateTopic -n "$NAMESRV_ADDR" -c DefaultCluster -t "%RETRY%cg_knowledge"
+              /home/rocketmq/rocketmq-5.3.2/bin/mqadmin updateTopic -n "$NAMESRV_ADDR" -c DefaultCluster -t "%RETRY%cg_search_app"
+              /home/rocketmq/rocketmq-5.3.2/bin/mqadmin updateTopic -n "$NAMESRV_ADDR" -c DefaultCluster -t "%RETRY%cg_search_resource"
+
+              echo "Creating RocketMQ consumer groups..."
+              /home/rocketmq/rocketmq-5.3.2/bin/mqadmin updateSubGroup -n "$NAMESRV_ADDR" -c DefaultCluster -g "cg_knowledge"
+              /home/rocketmq/rocketmq-5.3.2/bin/mqadmin updateSubGroup -n "$NAMESRV_ADDR" -c DefaultCluster -g "cg_search_app"
+              /home/rocketmq/rocketmq-5.3.2/bin/mqadmin updateSubGroup -n "$NAMESRV_ADDR" -c DefaultCluster -g "cg_search_resource"
+
+              /home/rocketmq/rocketmq-5.3.2/bin/mqadmin topicRoute -n "$NAMESRV_ADDR" -t opencoze_knowledge
+              echo "RocketMQ initialization completed."
+          env:
+            - name: JAVA_OPT_EXT
+              value: "-Xms128m -Xmx256m -Xmn64m"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
       containers:
         - name: ${{ defaults.app_name }}
           image: opencoze/opencoze:0.3.8
+          command:
+            - /bin/sh
+            - /app/sealos/entrypoint.sh
           env:
             - name: LISTEN_ADDR
               value: ":8888"
@@ -173,7 +257,7 @@ spec:
             - name: COZE_MQ_TYPE
               value: "rmq"
             - name: MQ_NAME_SERVER
-              value: "http://${{ defaults.app_name }}-rocketmq-namesrv:9876"
+              value: "${{ defaults.app_name }}-rocketmq-namesrv:9876"
             - name: VECTOR_STORE_TYPE
               value: "milvus"
             # - name: MILVUS_USER
@@ -231,11 +315,11 @@ spec:
               value: "https://imagex.volcengineapi.com"
           resources:
             requests:
-              cpu: 100m
-              memory: 256Mi
+              cpu: 50m
+              memory: 128Mi
             limits:
-              cpu: 1
-              memory: 2Gi
+              cpu: 500m
+              memory: 1Gi
           ports:
             - containerPort: 8888
           imagePullPolicy: IfNotPresent
@@ -243,10 +327,21 @@ spec:
             - name: ${{ defaults.app_name }}-cm
               mountPath: /app/resources/conf/model/template/ark_doubao-seed-1.6.yaml
               subPath: ark_doubao-seed-1.6.yaml
+            - name: ${{ defaults.app_name }}-entrypoint
+              mountPath: /app/sealos/entrypoint.sh
+              subPath: entrypoint.sh
+            - name: ${{ defaults.app_name }}-rocketmq-runtime
+              mountPath: /app/sealos/runtime
       volumes:
         - name: ${{ defaults.app_name }}-cm
           configMap:
             name: ${{ defaults.app_name }}
+        - name: ${{ defaults.app_name }}-entrypoint
+          configMap:
+            name: ${{ defaults.app_name }}-entrypoint
+            defaultMode: 493
+        - name: ${{ defaults.app_name }}-rocketmq-runtime
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -259,6 +354,40 @@ spec:
     - port: 8888
   selector:
     app: ${{ defaults.app_name }}
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${{ defaults.app_name }}-entrypoint
+data:
+  entrypoint.sh: |
+    #!/bin/sh
+    set -eu
+
+    if [ -f /app/sealos/runtime/env ]; then
+      . /app/sealos/runtime/env
+      export MQ_NAME_SERVER
+    fi
+
+    if [ -n "${MQ_NAME_SERVER:-}" ]; then
+      mq_host="${MQ_NAME_SERVER%:*}"
+      mq_port="${MQ_NAME_SERVER##*:}"
+      mq_ip=""
+      if command -v getent >/dev/null 2>&1; then
+        mq_ip="$(getent hosts "$mq_host" | awk '{print $1; exit}')"
+      fi
+      if echo "$mq_ip" | grep -Eq '^[0-9]+(\.[0-9]+){3}$'; then
+        export MQ_NAME_SERVER="${mq_ip}:${mq_port}"
+      fi
+      echo "MQ_NAME_SERVER=${MQ_NAME_SERVER}"
+    fi
+
+    if [ -x /app/bootstrap.sh ]; then
+      exec /app/bootstrap.sh
+    fi
+
+    exec /app/opencoze
 
 ---
 apiVersion: networking.k8s.io/v1
@@ -499,11 +628,11 @@ spec:
       replicas: 1
       resources:
         limits:
-          cpu: 500m
-          memory: 512Mi
+          cpu: 300m
+          memory: 384Mi
         requests:
-          cpu: 50m
-          memory: 51Mi
+          cpu: 25m
+          memory: 64Mi
       serviceAccountName: ${{ defaults.app_name }}-mysql
       volumeClaimTemplates:
         - name: data
@@ -2169,11 +2298,11 @@ spec:
       replicas: 1
       resources:
         limits:
-          cpu: 500m
-          memory: 512Mi
+          cpu: 300m
+          memory: 384Mi
         requests:
-          cpu: 50m
-          memory: 51Mi
+          cpu: 25m
+          memory: 64Mi
       serviceAccountName: ${{ defaults.app_name }}-redis
       switchPolicy:
         type: Noop
@@ -2192,11 +2321,11 @@ spec:
       replicas: 1
       resources:
         limits:
-          cpu: 100m
-          memory: 100Mi
+          cpu: 50m
+          memory: 64Mi
         requests:
-          cpu: 100m
-          memory: 100Mi
+          cpu: 25m
+          memory: 32Mi
       serviceAccountName: ${{ defaults.app_name }}-redis
   terminationPolicy: Delete
   tolerations: []
@@ -2272,11 +2401,11 @@ spec:
       replicas: 1
       resources:
         limits:
-          cpu: 500m
-          memory: 512Mi
+          cpu: 300m
+          memory: 384Mi
         requests:
-          cpu: 50m
-          memory: 51Mi
+          cpu: 25m
+          memory: 64Mi
       rsmTransformPolicy: ToSts
       serviceAccountName: ${{ defaults.app_name }}-milvus
       volumeClaimTemplates:
@@ -2294,11 +2423,11 @@ spec:
       replicas: 1
       resources:
         limits:
-          cpu: 500m
-          memory: 1Gi
+          cpu: 300m
+          memory: 512Mi
         requests:
-          cpu: 50m
-          memory: 128Mi
+          cpu: 25m
+          memory: 96Mi
       rsmTransformPolicy: ToSts
       serviceAccountName: ${{ defaults.app_name }}-milvus
       volumeClaimTemplates:
@@ -2316,11 +2445,11 @@ spec:
       replicas: 1
       resources:
         limits:
-          cpu: 500m
-          memory: 1Gi
+          cpu: 300m
+          memory: 512Mi
         requests:
-          cpu: 50m
-          memory: 128Mi
+          cpu: 25m
+          memory: 96Mi
       rsmTransformPolicy: ToSts
       serviceAccountName: ${{ defaults.app_name }}-milvus
       volumeClaimTemplates:
@@ -2445,13 +2574,15 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            - name: JAVA_OPT_EXT
+              value: "-Xms512m -Xmx1024m -Xmn256m"
           resources:
             requests:
-              cpu: 200m
-              memory: 400Mi
+              cpu: 100m
+              memory: 256Mi
             limits:
-              cpu: 2
-              memory: 4Gi
+              cpu: 1
+              memory: 2Gi
           ports:
             - containerPort: 10909
               name: broker-a
@@ -2470,7 +2601,7 @@ spec:
               command:
                 - sh
                 - -c
-                - "/home/rocketmq/rocketmq-5.3.2/bin/mqadmin clusterList -n localhost:9876"
+                - "/home/rocketmq/rocketmq-5.3.2/bin/mqadmin clusterList -n ${{ defaults.app_name }}-rocketmq-namesrv:9876"
             initialDelaySeconds: 30
             periodSeconds: 30
             timeoutSeconds: 10
@@ -2500,7 +2631,7 @@ spec:
           - ReadWriteOnce
         resources:
           requests:
-            storage: 5Gi
+            storage: 3Gi
     - metadata:
         name: broker-logs
         annotations:
@@ -2511,7 +2642,7 @@ spec:
           - ReadWriteOnce
         resources:
           requests:
-            storage: 5Gi
+            storage: 2Gi
 ---
 
 apiVersion: v1
@@ -2572,28 +2703,22 @@ spec:
               exec sh mqnamesrv
           resources:
             requests:
-              cpu: 100m
-              memory: 200Mi
+              cpu: 50m
+              memory: 128Mi
             limits:
-              cpu: 1
-              memory: 2Gi
+              cpu: 500m
+              memory: 1Gi
           ports:
             - containerPort: 9876
           readinessProbe:
-            exec:
-              command:
-                - sh
-                - -c
-                - "/home/rocketmq/rocketmq-5.3.2/bin/mqadmin clusterList -n localhost:9876"
+            tcpSocket:
+              port: 9876
             initialDelaySeconds: 20
             periodSeconds: 30
             timeoutSeconds: 10
           livenessProbe:
-            exec:
-              command:
-                - sh
-                - -c
-                - "/home/rocketmq/rocketmq-5.3.2/bin/mqadmin clusterList -n localhost:9876"
+            tcpSocket:
+              port: 9876
             initialDelaySeconds: 30
             periodSeconds: 30
             timeoutSeconds: 10
@@ -2616,7 +2741,7 @@ spec:
           - ReadWriteOnce
         resources:
           requests:
-            storage: 3Gi
+            storage: 1Gi
     - metadata:
         name: namesrv-logs
         annotations:
@@ -2627,7 +2752,7 @@ spec:
           - ReadWriteOnce
         resources:
           requests:
-            storage: 3Gi
+            storage: 1Gi
 ---
 
 apiVersion: v1
@@ -2669,54 +2794,12 @@ spec:
     spec:
       terminationGracePeriodSeconds: 10
       automountServiceAccountToken: false
-      initContainers:
-        - name: clean-pvc
-          image: busybox:1.37.0
-          command:
-            - /bin/sh
-            - -c
-            - |
-              set -ex
-              rm -rf /opt/bitnami/elasticsearch/plugins/lost+found
-          resources:
-            requests:
-              cpu: 10m
-              memory: 10Mi
-            limits:
-              cpu: 50m
-              memory: 128Mi
-          volumeMounts:
-            - name: es-plugins
-              mountPath: /opt/bitnami/elasticsearch/plugins
-          securityContext:
-            runAsUser: 0
-        - name: install-plugins
-          image: bitnamilegacy/elasticsearch:8.18.0
-          command:
-            - /bin/bash
-            - -c
-            - |
-              set -ex
-              echo 'Installing smartcn plugin...';
-              if [ ! -d /opt/bitnami/elasticsearch/plugins/analysis-smartcn ]; then
-                /opt/bitnami/elasticsearch/bin/elasticsearch-plugin install analysis-smartcn
-              fi
-          resources:
-            requests:
-              cpu: 200m
-              memory: 512Mi
-            limits:
-              cpu: 2
-              memory: 4Gi
-          volumeMounts:
-            - name: es-plugins
-              mountPath: /opt/bitnami/elasticsearch/plugins
       containers:
         - name: ${{ defaults.app_name }}-elasticsearch
           image: bitnamilegacy/elasticsearch:8.18.0
           env:
             - name: ES_JAVA_OPTS
-              value: "-Djdk.tls.client.protocols=TLSv1.2 -Dhttps.protocols=TLSv1.2 -Djavax.net.ssl.trustAll=true -Xms4096m -Xmx4096m"
+              value: "-Djdk.tls.client.protocols=TLSv1.2 -Dhttps.protocols=TLSv1.2 -Djavax.net.ssl.trustAll=true -Xms2048m -Xmx2048m"
             - name: ELASTIC_USERNAME
               value: "root"
             - name: ELASTIC_PASSWORD
@@ -2734,12 +2817,12 @@ spec:
               exec /opt/bitnami/scripts/elasticsearch/entrypoint.sh /opt/bitnami/scripts/elasticsearch/run.sh
           resources:
             requests:
-              cpu: 400m
-              memory: 800Mi
+              cpu: 200m
+              memory: 512Mi
               ephemeral-storage: 500Mi
             limits:
-              cpu: 4
-              memory: 8Gi
+              cpu: 2
+              memory: 4Gi
               ephemeral-storage: 500Mi
           ports:
             - containerPort: 9200
@@ -2751,8 +2834,6 @@ spec:
               mountPath: /opt/bitnami/elasticsearch/tmp
             - name: es-logs
               mountPath: /opt/bitnami/elasticsearch/logs
-            - name: es-plugins
-              mountPath: /opt/bitnami/elasticsearch/plugins
             - name: tmp
               mountPath: /tmp
       securityContext:
@@ -2768,7 +2849,7 @@ spec:
           - ReadWriteOnce
         resources:
           requests:
-            storage: 5Gi
+            storage: 2Gi
     - metadata:
         name: es-tmp
         annotations:
@@ -2779,7 +2860,7 @@ spec:
           - ReadWriteOnce
         resources:
           requests:
-            storage: 5Gi
+            storage: 2Gi
     - metadata:
         name: es-logs
         annotations:
@@ -2790,18 +2871,7 @@ spec:
           - ReadWriteOnce
         resources:
           requests:
-            storage: 5Gi
-    - metadata:
-        name: es-plugins
-        annotations:
-          path: /opt/bitnami/elasticsearch/plugins
-          value: '5'
-      spec:
-        accessModes:
-          - ReadWriteOnce
-        resources:
-          requests:
-            storage: 5Gi
+            storage: 2Gi
     - metadata:
         name: tmp
         annotations:
@@ -3149,11 +3219,11 @@ spec:
               exec /opt/bitnami/scripts/kibana/entrypoint.sh /opt/bitnami/scripts/kibana/run.sh
           resources:
             requests:
-              cpu: 100m
-              memory: 200Mi
+              cpu: 50m
+              memory: 128Mi
             limits:
-              cpu: 1
-              memory: 2Gi
+              cpu: 500m
+              memory: 1Gi
           ports:
             - containerPort: 5601
           imagePullPolicy: IfNotPresent
@@ -3190,7 +3260,7 @@ spec:
           - ReadWriteOnce
         resources:
           requests:
-            storage: 5Gi
+            storage: 2Gi
 ---
 apiVersion: v1
 kind: Service

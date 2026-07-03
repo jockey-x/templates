@@ -1,0 +1,265 @@
+apiVersion: app.sealos.io/v1
+kind: Template
+metadata:
+  name: dolphinscheduler
+spec:
+  title: 'Apache DolphinScheduler'
+  url: 'https://dolphinscheduler.apache.org/'
+  gitRepo: 'https://github.com/apache/dolphinscheduler'
+  author: 'Sealos'
+  description: 'Apache DolphinScheduler is a distributed workflow task scheduling platform with visual DAG-based orchestration.'
+  readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/dolphinscheduler/README.md'
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/dolphinscheduler/logo.png'
+  templateType: inline
+  locale: en
+  i18n:
+    zh:
+      description: 'Apache DolphinScheduler 是一个分布式工作流任务调度平台，提供基于可视化 DAG 的任务编排能力。'
+      readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/dolphinscheduler/README_zh.md'
+  categories:
+    - dev-ops
+    - backend
+  defaults:
+    app_name:
+      type: string
+      value: dolphinscheduler-${{ random(8) }}
+    app_host:
+      type: string
+      value: dolphinscheduler-${{ random(8) }}
+  inputs:
+    admin_password:
+      description: 'Initial admin password for DolphinScheduler. Use 2-20 characters.'
+      type: string
+      default: 'dolphinscheduler123'
+      required: true
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${{ defaults.app_name }}
+  annotations:
+    originImageName: apache/dolphinscheduler-standalone-server:3.4.1
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    app: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  serviceName: ${{ defaults.app_name }}
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: ${{ defaults.app_name }}
+          image: apache/dolphinscheduler-standalone-server:3.4.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              password="${DOLPHINSCHEDULER_ADMIN_PASSWORD:-dolphinscheduler123}"
+              if [ "${#password}" -lt 2 ] || [ "${#password}" -gt 20 ]; then
+                echo "DOLPHINSCHEDULER_ADMIN_PASSWORD must be 2-20 characters." >&2
+                exit 1
+              fi
+
+              mkdir -p /tmp/dolphinscheduler
+              password_md5="$(printf '%s' "$password" | md5sum)"
+              password_md5="${password_md5%% *}"
+              printf "UPDATE t_ds_user SET user_password = '%s' WHERE user_name = 'admin';\n" "$password_md5" > /tmp/dolphinscheduler/admin-password.sql
+              exec /bin/bash /opt/dolphinscheduler/standalone-server/bin/start.sh
+          env:
+            - name: TZ
+              value: Asia/Shanghai
+            - name: DOLPHINSCHEDULER_ADMIN_PASSWORD
+              value: ${{ inputs.admin_password }}
+            - name: SPRING_SQL_INIT_SCHEMA_LOCATIONS
+              value: classpath:sql/dolphinscheduler_h2.sql,file:/tmp/dolphinscheduler/admin-password.sql
+            - name: SPRING_JACKSON_TIME_ZONE
+              value: UTC
+            - name: SPRING_CLOUD_KUBERNETES_ENABLED
+              value: 'false'
+            - name: SPRING_CLOUD_KUBERNETES_CONFIG_ENABLED
+              value: 'false'
+            - name: SPRING_CLOUD_KUBERNETES_SECRETS_ENABLED
+              value: 'false'
+            - name: SPRING_CLOUD_KUBERNETES_DISCOVERY_ENABLED
+              value: 'false'
+            - name: JAVA_OPTS
+              value: >-
+                -server -Xms256m -Xmx512m -Xmn128m
+                -XX:+IgnoreUnrecognizedVMOptions
+                -XX:-OmitStackTraceInFastThrow
+                -XX:+ExitOnOutOfMemoryError
+                -XX:+HeapDumpOnOutOfMemoryError
+                -XX:HeapDumpPath=/tmp/dolphinscheduler/dump.hprof
+                -DDOCKER=true
+          ports:
+            - name: web
+              containerPort: 12345
+              protocol: TCP
+            - name: python-gateway
+              containerPort: 25333
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /dolphinscheduler/actuator/health
+              port: 12345
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /dolphinscheduler/actuator/health
+              port: 12345
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /dolphinscheduler/actuator/health
+              port: 12345
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: '1'
+              memory: 1Gi
+            requests:
+              cpu: 200m
+              memory: 512Mi
+          volumeMounts:
+            - name: vn-tmpvn-dolphinscheduler
+              mountPath: /tmp/dolphinscheduler
+            - name: vn-optvn-dolphinschedulervn-logs
+              mountPath: /opt/dolphinscheduler/logs
+            - name: vn-optvn-soft
+              mountPath: /opt/soft
+            - name: vn-dolphinscheduler
+              mountPath: /dolphinscheduler
+  volumeClaimTemplates:
+    - metadata:
+        name: vn-tmpvn-dolphinscheduler
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: vn-optvn-dolphinschedulervn-logs
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: vn-optvn-soft
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: vn-dolphinscheduler
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    app: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: web
+      port: 12345
+      targetPort: 12345
+      protocol: TCP
+    - name: python-gateway
+      port: 25333
+      targetPort: 25333
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager-domain: ${{ defaults.app_host }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/server-snippet: |
+      client_header_buffer_size 64k;
+      large_client_header_buffers 4 128k;
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/client-body-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '300'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '300'
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      if ($request_uri ~* \.(js|css|gif|jpe?g|png)) {
+        expires 30d;
+        add_header Cache-Control "public";
+      }
+spec:
+  rules:
+    - host: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: ${{ defaults.app_name }}
+                port:
+                  number: 12345
+  tls:
+    - hosts:
+        - ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      secretName: ${{ SEALOS_CERT_SECRET_NAME }}
+
+---
+apiVersion: app.sealos.io/v1
+kind: App
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  data:
+    url: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}/dolphinscheduler/ui
+  displayType: normal
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/dolphinscheduler/logo.png'
+  name: Apache DolphinScheduler
+  type: link

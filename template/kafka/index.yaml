@@ -1,0 +1,229 @@
+apiVersion: app.sealos.io/v1
+kind: Template
+metadata:
+  name: kafka
+spec:
+  title: 'Apache Kafka'
+  url: 'https://kafka.apache.org/'
+  gitRepo: 'https://github.com/apache/kafka'
+  author: 'Sealos'
+  description: 'Apache Kafka is a distributed event streaming platform for high-throughput data pipelines, streaming analytics, and messaging.'
+  readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/kafka/README.md'
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/kafka/logo.svg'
+  templateType: inline
+  locale: en
+  i18n:
+    zh:
+      description: 'Apache Kafka 是一个分布式事件流平台，适用于高吞吐数据管道、流式分析和消息系统。'
+      readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/kafka/README_zh.md'
+  categories:
+    - database
+    - backend
+  defaults:
+    app_name:
+      type: string
+      value: kafka-${{ random(8) }}
+  inputs:
+    zookeeper_service:
+      description: 'ZooKeeper Service name deployed in the same namespace.'
+      type: string
+      default: 'zookeeper'
+      required: true
+    broker_replicas:
+      description: 'Number of Kafka broker replicas.'
+      type: number
+      default: '1'
+      required: true
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${{ defaults.app_name }}
+  annotations:
+    originImageName: quay-kufddygt.sealoshzh.site/u-002/kafka:2.8.2
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '${{ inputs.broker_replicas }}'
+  labels:
+    app: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  replicas: ${{ inputs.broker_replicas }}
+  revisionHistoryLimit: 1
+  minReadySeconds: 10
+  serviceName: ${{ defaults.app_name }}
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: init-permissions
+          image: quay-kufddygt.sealoshzh.site/u-002/kafka:2.8.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - mkdir -p /data/kafka-logs /logs && chown -R 1000:1000 /data /logs && chmod -R ug+rwX /data /logs
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: vn-data
+              mountPath: /data
+            - name: vn-logs
+              mountPath: /logs
+      containers:
+        - name: ${{ defaults.app_name }}
+          image: quay-kufddygt.sealoshzh.site/u-002/kafka:2.8.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              : "${KAFKA_HOME:=/opt/kafka}"
+              export PATH="${KAFKA_HOME}/bin:${PATH}"
+              export LOG_DIR=/logs
+              ZOOKEEPER_HOST="${KAFKA_ZOOKEEPER_SERVICE}.${KAFKA_NAMESPACE}.svc.cluster.local"
+              until (echo >"/dev/tcp/${ZOOKEEPER_HOST}/2181") >/dev/null 2>&1; do
+                echo waiting for zookeeper
+                sleep 5
+              done
+              mkdir -p /data/kafka-logs /logs
+              export KAFKA_HEAP_OPTS="${KAFKA_HEAP_OPTS:--Xms256m -Xmx512m}"
+              BROKER_ID="$(printf '%s' "${POD_NAME}" | awk -F- '{print $NF}')"
+              export KAFKA_CFG_BROKER_ID="${BROKER_ID}"
+              export KAFKA_CFG_ZOOKEEPER_CONNECT="${ZOOKEEPER_HOST}:2181"
+              export KAFKA_CFG_LOG_DIRS=/data/kafka-logs
+              export KAFKA_CFG_LISTENERS=PLAINTEXT://0.0.0.0:9092
+              export KAFKA_CFG_ADVERTISED_LISTENERS="PLAINTEXT://${POD_NAME}.${KAFKA_SERVICE}.${KAFKA_NAMESPACE}.svc.cluster.local:9092"
+              exec /entrypoint.sh
+          env:
+            - name: KAFKA_HOME
+              value: /opt/kafka
+            - name: KAFKA_ZOOKEEPER_SERVICE
+              value: ${{ inputs.zookeeper_service }}
+            - name: KAFKA_SERVICE
+              value: ${{ defaults.app_name }}
+            - name: KAFKA_NAMESPACE
+              value: ${{ SEALOS_NAMESPACE }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: KAFKA_HEAP_OPTS
+              value: -Xms256m -Xmx512m
+            - name: KAFKA_CFG_DEFAULT_REPLICATION_FACTOR
+              value: '1'
+            - name: KAFKA_CFG_MIN_INSYNC_REPLICAS
+              value: '1'
+            - name: KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: '1'
+            - name: KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: '1'
+            - name: KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR
+              value: '1'
+            - name: KAFKA_CFG_GROUP_INITIAL_REBALANCE_DELAY_MS
+              value: '0'
+            - name: KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE
+              value: 'true'
+          ports:
+            - name: broker
+              containerPort: 9092
+              protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 120
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+          volumeMounts:
+            - name: vn-data
+              mountPath: /data
+            - name: vn-logs
+              mountPath: /logs
+  volumeClaimTemplates:
+    - metadata:
+        name: vn-data
+        annotations:
+          path: /data
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: vn-logs
+        annotations:
+          path: /logs
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    app: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: broker
+      port: 9092
+      targetPort: 9092
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}
+
+---
+apiVersion: app.sealos.io/v1
+kind: App
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  data:
+    url: kafka://${{ defaults.app_name }}.${{ SEALOS_NAMESPACE }}.svc.cluster.local:9092
+  displayType: normal
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/kafka/logo.svg'
+  name: Apache Kafka
+  type: link

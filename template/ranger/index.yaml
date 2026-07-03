@@ -1,0 +1,504 @@
+apiVersion: app.sealos.io/v1
+kind: Template
+metadata:
+  name: ranger
+spec:
+  title: 'Apache Ranger'
+  url: 'https://ranger.apache.org/'
+  gitRepo: 'https://github.com/apache/ranger'
+  author: 'Sealos'
+  description: 'Apache Ranger provides centralized security administration, fine-grained authorization, and auditing for Hadoop ecosystem services.'
+  readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/ranger/README.md'
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/ranger/logo.svg'
+  templateType: inline
+  locale: en
+  i18n:
+    zh:
+      description: 'Apache Ranger 为 Hadoop 生态服务提供集中式安全管理、细粒度授权和审计能力。'
+      readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/ranger/README_zh.md'
+  categories:
+    - dev-ops
+    - backend
+  defaults:
+    app_name:
+      type: string
+      value: ranger-${{ random(8) }}
+    app_host:
+      type: string
+      value: ranger-${{ random(8) }}
+  inputs:
+    admin_password:
+      description: 'Initial Ranger Admin password.'
+      type: string
+      default: 'RangerA1${{ random(8) }}'
+      required: true
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-mysql
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-mysql
+    app.kubernetes.io/managed-by: kbcli
+  name: ${{ defaults.app_name }}-mysql
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-mysql
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-mysql
+    app.kubernetes.io/managed-by: kbcli
+  name: ${{ defaults.app_name }}-mysql
+rules:
+  - apiGroups:
+      - '*'
+    resources:
+      - '*'
+    verbs:
+      - '*'
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-mysql
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-mysql
+    app.kubernetes.io/managed-by: kbcli
+  name: ${{ defaults.app_name }}-mysql
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ${{ defaults.app_name }}-mysql
+subjects:
+  - kind: ServiceAccount
+    name: ${{ defaults.app_name }}-mysql
+
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: Cluster
+metadata:
+  labels:
+    kb.io/database: ac-mysql-8.0.30-1
+    clusterdefinition.kubeblocks.io/name: apecloud-mysql
+    clusterversion.kubeblocks.io/name: ac-mysql-8.0.30-1
+  name: ${{ defaults.app_name }}-mysql
+spec:
+  affinity:
+    nodeLabels: {}
+    podAntiAffinity: Preferred
+    tenancy: SharedNode
+    topologyKeys:
+      - kubernetes.io/hostname
+  clusterDefinitionRef: apecloud-mysql
+  clusterVersionRef: ac-mysql-8.0.30-1
+  componentSpecs:
+    - componentDefRef: mysql
+      monitor: true
+      name: mysql
+      noCreatePDB: false
+      replicas: 1
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 100m
+          memory: 512Mi
+      serviceAccountName: ${{ defaults.app_name }}-mysql
+      switchPolicy:
+        type: Noop
+      volumeClaimTemplates:
+        - name: data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 1Gi
+            storageClassName: openebs-backup
+  terminationPolicy: Delete
+  tolerations: []
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${{ defaults.app_name }}-mysql-init
+spec:
+  completions: 1
+  template:
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: mysql-init
+          image: mysql:8.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: password
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: username
+            - name: MYSQL_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: host
+            - name: MYSQL_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: port
+            - name: DATABASE_NAME
+              value: ranger
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until mysql -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} -e "SELECT 1" >/dev/null 2>&1; do
+                echo "MySQL is not ready, retrying..."
+                sleep 2
+              done
+              mysql -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} \
+                -e "CREATE DATABASE IF NOT EXISTS \`${DATABASE_NAME}\` DEFAULT CHARACTER SET utf8mb4 DEFAULT COLLATE utf8mb4_unicode_ci;"
+      restartPolicy: Never
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${{ defaults.app_name }}-config
+  labels:
+    app: ${{ defaults.app_name }}-config
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-config
+data:
+  install.properties: |
+    DB_FLAVOR=MYSQL
+    SQL_CONNECTOR_JAR=/opt/ranger/mysql-connector-java-8.0.30.jar
+    db_root_user=${RANGER_DB_USER}
+    db_root_password=${RANGER_DB_PASSWORD}
+    db_host=${RANGER_DB_HOST}
+    db_name=${RANGER_DB_NAME}
+    db_user=${RANGER_DB_USER}
+    db_password=${RANGER_DB_PASSWORD}
+    rangerAdmin_password=${RANGER_ADMIN_PASS}
+    rangerTagsync_password=${RANGER_ADMIN_PASS}
+    rangerUsersync_password=${RANGER_ADMIN_PASS}
+    keyadmin_password=${RANGER_ADMIN_PASS}
+    audit_store=none
+    policymgr_external_url=http://${RANGER_SERVICE}.${RANGER_NAMESPACE}.svc.cluster.local:6080
+    unix_user=root
+    unix_group=root
+    authentication_method=NONE
+    JAVA_VERSION_REQUIRED=1.8
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${{ defaults.app_name }}
+  annotations:
+    originImageName: sealo.hub:5000/u-002/ranger:2.4.0
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    app: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  minReadySeconds: 10
+  serviceName: ${{ defaults.app_name }}
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: init-permissions
+          image: sealo.hub:5000/u-002/ranger:2.4.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - mkdir -p /data /logs && chown -R 1000:1000 /data /logs && chmod -R ug+rwX /data /logs
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: vn-data
+              mountPath: /data
+            - name: vn-logs
+              mountPath: /logs
+      containers:
+        - name: ${{ defaults.app_name }}
+          image: sealo.hub:5000/u-002/ranger:2.4.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              : "${RANGER_HOME:=/opt/ranger}"
+              : "${RANGER_ADMIN_HOME:=${RANGER_HOME}/ranger-2.4.0-admin}"
+              if [ ! -x "${RANGER_ADMIN_HOME}/setup.sh" ]; then
+                echo "Unable to find Ranger Admin home under ${RANGER_ADMIN_HOME}" >&2
+                exit 1
+              fi
+              export RANGER_HOME RANGER_ADMIN_HOME
+              export PATH="${RANGER_ADMIN_HOME}/ews/webapp/WEB-INF/classes/conf:${RANGER_ADMIN_HOME}/ews/webapp/WEB-INF/lib:${RANGER_ADMIN_HOME}/ews/lib:${RANGER_ADMIN_HOME}/bin:${PATH}"
+              if [ -z "${JAVA_HOME:-}" ] || [ ! -x "${JAVA_HOME}/bin/java" ]; then
+                JAVA_BIN="$(command -v java)"
+                JAVA_REAL="$(readlink -f "${JAVA_BIN}" 2>/dev/null || realpath "${JAVA_BIN}" 2>/dev/null || echo "${JAVA_BIN}")"
+                export JAVA_HOME="$(dirname "$(dirname "${JAVA_REAL}")")"
+              fi
+              if [ "${RANGER_ADMIN_PASS}" = "admin" ]; then
+                echo "RANGER_ADMIN_PASS must not be 'admin'; Ranger setup requires a new admin password." >&2
+                exit 1
+              fi
+              if [ "${#RANGER_ADMIN_PASS}" -lt 8 ] || \
+                 ! printf '%s' "${RANGER_ADMIN_PASS}" | grep -q '[A-Z]' || \
+                 ! printf '%s' "${RANGER_ADMIN_PASS}" | grep -q '[a-z]' || \
+                 ! printf '%s' "${RANGER_ADMIN_PASS}" | grep -q '[0-9]'; then
+                echo "RANGER_ADMIN_PASS must be at least 8 characters and include uppercase, lowercase, and numeric characters." >&2
+                exit 1
+              fi
+              : "${RANGER_DB_NAME:=ranger}"
+              mkdir -p /data /logs
+              until (echo >"/dev/tcp/${RANGER_DB_HOST}/${RANGER_DB_PORT}") >/dev/null 2>&1; do
+                echo waiting for ranger database
+                sleep 5
+              done
+              cp /mounted-conf/install.properties /tmp/ranger-install-overrides.properties
+              sed -i "s#\${RANGER_DB_USER}#${RANGER_DB_USER}#g" /tmp/ranger-install-overrides.properties
+              sed -i "s#\${RANGER_DB_PASSWORD}#${RANGER_DB_PASSWORD}#g" /tmp/ranger-install-overrides.properties
+              sed -i "s#\${RANGER_ADMIN_PASS}#${RANGER_ADMIN_PASS}#g" /tmp/ranger-install-overrides.properties
+              sed -i "s#\${RANGER_SERVICE}#${RANGER_SERVICE}#g" /tmp/ranger-install-overrides.properties
+              sed -i "s#\${RANGER_NAMESPACE}#${RANGER_NAMESPACE}#g" /tmp/ranger-install-overrides.properties
+              sed -i "s#\${RANGER_DB_HOST}#${RANGER_DB_HOST}#g" /tmp/ranger-install-overrides.properties
+              sed -i "s#\${RANGER_DB_NAME}#${RANGER_DB_NAME}#g" /tmp/ranger-install-overrides.properties
+              awk -F= '
+                NR==FNR {
+                  if ($0 ~ /^[[:space:]]*#/ || $0 ~ /^[[:space:]]*$/) next
+                  key=$1
+                  overrides[key]=$0
+                  next
+                }
+                {
+                  split($0, parts, "=")
+                  key=parts[1]
+                  if (key in overrides) {
+                    print overrides[key]
+                    seen[key]=1
+                  } else {
+                    print
+                  }
+                }
+                END {
+                  for (key in overrides) {
+                    if (!(key in seen)) print overrides[key]
+                  }
+                }
+              ' /tmp/ranger-install-overrides.properties "${RANGER_ADMIN_HOME}/install.properties" > /tmp/ranger-install.properties
+              mv /tmp/ranger-install.properties "${RANGER_ADMIN_HOME}/install.properties"
+              export RANGER_STORE_JDBC="jdbc:mysql://${RANGER_DB_HOST}:${RANGER_DB_PORT}/${RANGER_DB_NAME}"
+              export RANGER_STORE_USER="${RANGER_DB_USER}"
+              export RANGER_STORE_PASS="${RANGER_DB_PASSWORD}"
+              export RANGER_ADMIN_PASS RANGER_DB_HOST RANGER_DB_NAME RANGER_DB_PORT RANGER_DB_USER RANGER_DB_PASSWORD
+              export LOGFILE=/logs/ranger-admin-setup.log
+              touch "${LOGFILE}"
+              exec /opt/entrypoint.sh
+          env:
+            - name: RANGER_HOME
+              value: /opt/ranger
+            - name: RANGER_ADMIN_HOME
+              value: /opt/ranger/ranger-2.4.0-admin
+            - name: RANGER_DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: host
+            - name: RANGER_DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: port
+            - name: RANGER_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: username
+            - name: RANGER_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: password
+            - name: RANGER_DB_NAME
+              value: ranger
+            - name: RANGER_ADMIN_PASS
+              value: ${{ inputs.admin_password }}
+            - name: RANGER_SERVICE
+              value: ${{ defaults.app_name }}
+            - name: RANGER_NAMESPACE
+              value: ${{ SEALOS_NAMESPACE }}
+            - name: RANGER_OPTS
+              value: -Xms256m -Xmx768m
+          ports:
+            - name: http
+              containerPort: 6080
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /
+              port: 6080
+            initialDelaySeconds: 180
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 72
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 6080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 6080
+            initialDelaySeconds: 180
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+          volumeMounts:
+            - name: vn-mountedvn-conf
+              mountPath: /mounted-conf
+            - name: vn-data
+              mountPath: /data
+            - name: vn-logs
+              mountPath: /logs
+      volumes:
+        - name: vn-mountedvn-conf
+          configMap:
+            name: ${{ defaults.app_name }}-config
+  volumeClaimTemplates:
+    - metadata:
+        name: vn-data
+        annotations:
+          path: /data
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: vn-logs
+        annotations:
+          path: /logs
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    app: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 6080
+      targetPort: 6080
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager-domain: ${{ defaults.app_host }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/server-snippet: |
+      client_header_buffer_size 64k;
+      large_client_header_buffers 4 128k;
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/client-body-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '300'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '300'
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      if ($request_uri ~* \.(js|css|gif|jpe?g|png)) {
+        expires 30d;
+        add_header Cache-Control "public";
+      }
+spec:
+  rules:
+    - host: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: ${{ defaults.app_name }}
+                port:
+                  number: 6080
+  tls:
+    - hosts:
+        - ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      secretName: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}-cert
+
+---
+apiVersion: app.sealos.io/v1
+kind: App
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  data:
+    url: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+  displayType: normal
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/ranger/logo.svg'
+  name: Apache Ranger
+  type: link

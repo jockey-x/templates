@@ -1,0 +1,371 @@
+apiVersion: app.sealos.io/v1
+kind: Template
+metadata:
+  name: flink
+spec:
+  title: 'Apache Flink'
+  url: 'https://flink.apache.org/'
+  gitRepo: 'https://github.com/apache/flink'
+  author: 'Sealos'
+  description: 'Apache Flink is a framework and distributed processing engine for stateful computations over unbounded and bounded data streams.'
+  readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/flink/README.md'
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/flink/logo.png'
+  templateType: inline
+  locale: en
+  i18n:
+    zh:
+      description: 'Apache Flink 是用于有界和无界数据流状态计算的分布式处理框架和引擎。'
+      readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/flink/README_zh.md'
+  categories:
+    - backend
+    - dev-ops
+  defaults:
+    app_name:
+      type: string
+      value: flink-${{ random(8) }}
+    app_host:
+      type: string
+      value: flink-${{ random(8) }}
+  inputs:
+    taskmanager_replicas:
+      description: 'Number of Flink TaskManager replicas.'
+      type: number
+      default: '1'
+      required: true
+    task_slots:
+      description: 'Number of task slots provided by each TaskManager.'
+      type: number
+      default: '2'
+      required: true
+    default_parallelism:
+      description: 'Default parallelism used by submitted Flink jobs.'
+      type: number
+      default: '2'
+      required: true
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${{ defaults.app_name }}-config
+  labels:
+    app: ${{ defaults.app_name }}-config
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-config
+data:
+  vn-optvn-flinkvn-confvn-flinkvn-confvn-yaml: |
+    jobmanager.rpc.address: ${{ defaults.app_name }}-jobmanager.${{ SEALOS_NAMESPACE }}.svc.cluster.local
+    jobmanager.rpc.port: 6123
+    jobmanager.bind-host: 0.0.0.0
+    jobmanager.memory.process.size: 1024m
+    taskmanager.bind-host: 0.0.0.0
+    taskmanager.memory.process.size: 1024m
+    taskmanager.numberOfTaskSlots: ${{ inputs.task_slots }}
+    taskmanager.rpc.port: 6122
+    blob.server.port: 6124
+    queryable-state.proxy.ports: 6125
+    rest.address: 0.0.0.0
+    rest.bind-address: 0.0.0.0
+    rest.port: 8081
+    parallelism.default: ${{ inputs.default_parallelism }}
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ defaults.app_name }}-jobmanager
+  annotations:
+    originImageName: quay-kufddygt.sealoshzh.site/u-002/flink:1.16.2
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    app: ${{ defaults.app_name }}-jobmanager
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-jobmanager
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-jobmanager
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-jobmanager
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: ${{ defaults.app_name }}-jobmanager
+          image: quay-kufddygt.sealoshzh.site/u-002/flink:1.16.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              if [ -n "${FLINK_PROPERTIES:-}" ]; then
+                printf '%s\n' "${FLINK_PROPERTIES}" >> "${FLINK_HOME}/conf/flink-conf.yaml"
+              fi
+              mkdir -p "${FLINK_HOME}/log"
+              exec "${FLINK_HOME}/bin/jobmanager.sh" start-foreground
+          env:
+            - name: DISABLE_JEMALLOC
+              value: 'true'
+            - name: FLINK_PROPERTIES
+              valueFrom:
+                configMapKeyRef:
+                  name: ${{ defaults.app_name }}-config
+                  key: vn-optvn-flinkvn-confvn-flinkvn-confvn-yaml
+          ports:
+            - name: rpc
+              containerPort: 6123
+              protocol: TCP
+            - name: blob-server
+              containerPort: 6124
+              protocol: TCP
+            - name: webui
+              containerPort: 8081
+              protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: 6123
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8081
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            tcpSocket:
+              port: 6123
+            initialDelaySeconds: 60
+            periodSeconds: 60
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 2Gi
+          securityContext:
+            runAsUser: 9999
+            runAsGroup: 9999
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-jobmanager
+  labels:
+    app: ${{ defaults.app_name }}-jobmanager
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-jobmanager
+spec:
+  type: ClusterIP
+  publishNotReadyAddresses: true
+  ports:
+    - name: rpc
+      port: 6123
+      targetPort: 6123
+      protocol: TCP
+    - name: blob-server
+      port: 6124
+      targetPort: 6124
+      protocol: TCP
+    - name: webui
+      port: 8081
+      targetPort: 8081
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}-jobmanager
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ defaults.app_name }}-taskmanager
+  annotations:
+    originImageName: quay-kufddygt.sealoshzh.site/u-002/flink:1.16.2
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '${{ inputs.taskmanager_replicas }}'
+  labels:
+    app: ${{ defaults.app_name }}-taskmanager
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-taskmanager
+spec:
+  replicas: ${{ inputs.taskmanager_replicas }}
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-taskmanager
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-taskmanager
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: ${{ defaults.app_name }}-taskmanager
+          image: quay-kufddygt.sealoshzh.site/u-002/flink:1.16.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              if [ -n "${FLINK_PROPERTIES:-}" ]; then
+                printf '%s\n' "${FLINK_PROPERTIES}" >> "${FLINK_HOME}/conf/flink-conf.yaml"
+              fi
+              jobmanager_host="${FLINK_JOBMANAGER_SERVICE}.${FLINK_NAMESPACE}.svc.cluster.local"
+              until (echo >"/dev/tcp/${jobmanager_host}/6123") >/dev/null 2>&1; do
+                echo waiting for Flink JobManager
+                sleep 5
+              done
+              mkdir -p "${FLINK_HOME}/log"
+              exec "${FLINK_HOME}/bin/taskmanager.sh" start-foreground
+          env:
+            - name: DISABLE_JEMALLOC
+              value: 'true'
+            - name: FLINK_JOBMANAGER_SERVICE
+              value: ${{ defaults.app_name }}-jobmanager
+            - name: FLINK_NAMESPACE
+              value: ${{ SEALOS_NAMESPACE }}
+            - name: FLINK_PROPERTIES
+              valueFrom:
+                configMapKeyRef:
+                  name: ${{ defaults.app_name }}-config
+                  key: vn-optvn-flinkvn-confvn-flinkvn-confvn-yaml
+          ports:
+            - name: rpc
+              containerPort: 6122
+              protocol: TCP
+            - name: query-state
+              containerPort: 6125
+              protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: 6122
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: 6122
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            tcpSocket:
+              port: 6122
+            initialDelaySeconds: 60
+            periodSeconds: 60
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 2Gi
+          securityContext:
+            runAsUser: 9999
+            runAsGroup: 9999
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-taskmanager
+  labels:
+    app: ${{ defaults.app_name }}-taskmanager
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-taskmanager
+spec:
+  type: ClusterIP
+  publishNotReadyAddresses: true
+  ports:
+    - name: rpc
+      port: 6122
+      targetPort: 6122
+      protocol: TCP
+    - name: query-state
+      port: 6125
+      targetPort: 6125
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}-taskmanager
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${{ defaults.app_name }}-jobmanager
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-jobmanager
+    cloud.sealos.io/app-deploy-manager-domain: ${{ defaults.app_host }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/server-snippet: |
+      client_header_buffer_size 64k;
+      large_client_header_buffers 4 128k;
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/client-body-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '300'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '300'
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      if ($request_uri ~* \.(js|css|gif|jpe?g|png)) {
+        expires 30d;
+        add_header Cache-Control "public";
+      }
+spec:
+  rules:
+    - host: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: ${{ defaults.app_name }}-jobmanager
+                port:
+                  number: 8081
+  tls:
+    - hosts:
+        - ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      secretName: ${{ SEALOS_CERT_SECRET_NAME }}
+
+---
+apiVersion: app.sealos.io/v1
+kind: App
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  data:
+    url: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+  displayType: normal
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/flink/logo.png'
+  name: Apache Flink
+  type: iframe

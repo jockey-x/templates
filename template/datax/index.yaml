@@ -1,0 +1,124 @@
+apiVersion: app.sealos.io/v1
+kind: Template
+metadata:
+  name: datax
+spec:
+  title: 'DataX'
+  url: 'https://github.com/alibaba/DataX'
+  gitRepo: 'https://github.com/alibaba/DataX'
+  author: 'Sealos'
+  description: 'DataX is Alibaba Cloud DataWorks Data Integration offline data synchronization engine.'
+  readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/datax/README.md'
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/datax/logo.png'
+  templateType: inline
+  locale: en
+  i18n:
+    zh:
+      description: 'DataX 是阿里云 DataWorks 数据集成的离线数据同步引擎，用于在异构数据源之间进行高效数据同步。'
+      readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/datax/README_zh.md'
+  categories:
+    - dev-ops
+    - backend
+  defaults:
+    app_name:
+      type: string
+      value: datax-${{ random(8) }}
+  inputs:
+    schedule:
+      description: 'Cron schedule for running the DataX job.'
+      type: string
+      default: '0 2 * * *'
+      required: true
+    datax_package_url:
+      description: 'Official DataX release package URL.'
+      type: string
+      default: 'https://datax-opensource.oss-cn-hangzhou.aliyuncs.com/202309/datax.tar.gz'
+      required: true
+    job_json:
+      description: 'DataX job.json content.'
+      type: string
+      default: '{"job":{"setting":{"speed":{"channel":1}},"content":[{"reader":{"name":"streamreader","parameter":{"sliceRecordCount":10,"column":[{"type":"string","value":"hello datax"}]}},"writer":{"name":"streamwriter","parameter":{"print":true,"encoding":"UTF-8"}}}]}}'
+      required: true
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${{ defaults.app_name }}-config
+  labels:
+    app: ${{ defaults.app_name }}-config
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-config
+data:
+  vn-jobvn-json: |
+    ${{ inputs.job_json }}
+
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/cronjob: ${{ defaults.app_name }}
+    cronjob-launchpad-name: ""
+    cronjob-type: image
+spec:
+  schedule: '${{ inputs.schedule }}'
+  timeZone: Asia/Shanghai
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 300
+      template:
+        metadata:
+          labels:
+            app: ${{ defaults.app_name }}
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: OnFailure
+          containers:
+            - name: ${{ defaults.app_name }}
+              image: amazoncorretto:8u492-alpine3.23-jre
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/bash
+                - -ec
+                - |
+                  mkdir -p /opt/datax /workspace
+
+                  if ! command -v curl >/dev/null 2>&1; then
+                    yum install -y curl
+                  fi
+                  if ! command -v python >/dev/null 2>&1; then
+                    yum install -y python
+                  fi
+
+                  curl -fsSL "$DATAX_PACKAGE_URL" -o /tmp/datax.tar.gz
+                  tar -xzf /tmp/datax.tar.gz -C /opt/datax --strip-components=1
+                  chmod +x /opt/datax/bin/datax.py
+
+                  python /opt/datax/bin/datax.py /workspace/job.json
+              env:
+                - name: DATAX_PACKAGE_URL
+                  value: ${{ inputs.datax_package_url }}
+                - name: PYTHONIOENCODING
+                  value: UTF-8
+              resources:
+                limits:
+                  cpu: 200m
+                  memory: 256Mi
+                requests:
+                  cpu: 20m
+                  memory: 25Mi
+              volumeMounts:
+                - name: vn-workspace
+                  mountPath: /workspace
+          volumes:
+            - name: vn-workspace
+              configMap:
+                name: ${{ defaults.app_name }}-config
+                items:
+                  - key: vn-jobvn-json
+                    path: job.json

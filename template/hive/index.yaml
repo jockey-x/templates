@@ -1,0 +1,995 @@
+apiVersion: app.sealos.io/v1
+kind: Template
+metadata:
+  name: hive
+spec:
+  title: 'Apache Hive'
+  url: 'https://hive.apache.org/'
+  gitRepo: 'https://github.com/apache/hive'
+  author: 'Sealos'
+  description: 'Apache Hive is a distributed data warehouse system that provides SQL access to data stored in Hadoop-compatible storage, with Tez configured as the execution engine.'
+  readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/hive/README.md'
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/hive/logo.svg'
+  templateType: inline
+  locale: en
+  i18n:
+    zh:
+      description: 'Apache Hive 是一个分布式数据仓库系统，为 Hadoop 兼容存储中的数据提供 SQL 查询能力，并内置 Tez 执行引擎配置。'
+      readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/hive/README_zh.md'
+  categories:
+    - database
+    - backend
+  defaults:
+    app_name:
+      type: string
+      value: hive-${{ random(8) }}
+    app_host:
+      type: string
+      value: hive-${{ random(8) }}
+  inputs:
+    hadoop_configmap_name:
+      description: 'Existing Hadoop ConfigMap name in the same namespace. It must contain core-site.xml, hdfs-site.xml, and yarn-site.xml.'
+      type: string
+      default: 'hadoop-config'
+      required: true
+    use_external_mysql:
+      description: 'Use an external MySQL database instead of creating the built-in MySQL database.'
+      type: boolean
+      default: 'false'
+      required: false
+    external_mysql_url:
+      description: 'External MySQL connection string, for example mysql://user:password@mysql.example.com:3306/hive_metastore.'
+      type: string
+      default: ''
+      required: true
+      if: inputs.use_external_mysql === 'true'
+
+---
+${{ if(inputs.use_external_mysql === 'false') }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-mysql
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-mysql
+    app.kubernetes.io/managed-by: kbcli
+  name: ${{ defaults.app_name }}-mysql
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-mysql
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-mysql
+    app.kubernetes.io/managed-by: kbcli
+  name: ${{ defaults.app_name }}-mysql
+rules:
+  - apiGroups:
+      - '*'
+    resources:
+      - '*'
+    verbs:
+      - '*'
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-mysql
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-mysql
+    app.kubernetes.io/managed-by: kbcli
+  name: ${{ defaults.app_name }}-mysql
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ${{ defaults.app_name }}-mysql
+subjects:
+  - kind: ServiceAccount
+    name: ${{ defaults.app_name }}-mysql
+
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: Cluster
+metadata:
+  labels:
+    kb.io/database: ac-mysql-8.0.30-1
+    clusterdefinition.kubeblocks.io/name: apecloud-mysql
+    clusterversion.kubeblocks.io/name: ac-mysql-8.0.30-1
+    sealos-db-provider-cr: ${{ defaults.app_name }}-mysql
+  name: ${{ defaults.app_name }}-mysql
+spec:
+  affinity:
+    nodeLabels: {}
+    podAntiAffinity: Preferred
+    tenancy: SharedNode
+    topologyKeys:
+      - kubernetes.io/hostname
+  clusterDefinitionRef: apecloud-mysql
+  clusterVersionRef: ac-mysql-8.0.30-1
+  componentSpecs:
+    - componentDefRef: mysql
+      monitor: true
+      name: mysql
+      noCreatePDB: false
+      replicas: 1
+      resources:
+        limits:
+          cpu: "1"
+          memory: 1Gi
+        requests:
+          cpu: 100m
+          memory: 512Mi
+      serviceAccountName: ${{ defaults.app_name }}-mysql
+      switchPolicy:
+        type: Noop
+      volumeClaimTemplates:
+        - name: data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 1Gi
+            storageClassName: openebs-backup
+  terminationPolicy: Delete
+  tolerations: []
+${{ else() }}
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${{ defaults.app_name }}-mysql-conn-credential
+  labels:
+    app: ${{ defaults.app_name }}-mysql
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-mysql
+type: Opaque
+stringData:
+  url: "${{ inputs.external_mysql_url }}"
+${{ endif() }}
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${{ defaults.app_name }}-mysql-init
+spec:
+  completions: 1
+  template:
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: mysql-init
+          image: mysql:8.0
+          imagePullPolicy: IfNotPresent
+          env:
+            ${{ if(inputs.use_external_mysql === 'true') }}
+            - name: MYSQL_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: url
+            ${{ else() }}
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: password
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: username
+            - name: MYSQL_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: host
+            - name: MYSQL_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: port
+            - name: HIVE_METASTORE_DB
+              value: hive_metastore
+            ${{ endif() }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              if [ -n "${MYSQL_URL:-}" ]; then
+                mysql_url="${MYSQL_URL#mysql://}"
+                if [ "${mysql_url}" = "${MYSQL_URL}" ]; then
+                  echo "MYSQL_URL must use mysql://user:password@host:port/database format." >&2
+                  exit 1
+                fi
+                mysql_url="${mysql_url%%\?*}"
+                mysql_auth="${mysql_url%@*}"
+                mysql_host_db="${mysql_url##*@}"
+                if [ "${mysql_auth}" = "${mysql_url}" ] || [ -z "${mysql_auth}" ] || [ "${mysql_host_db}" = "${mysql_url}" ]; then
+                  echo "MYSQL_URL must include user, password, host, and database." >&2
+                  exit 1
+                fi
+                if [ "${mysql_auth#*:}" = "${mysql_auth}" ]; then
+                  echo "MYSQL_URL must include a password." >&2
+                  exit 1
+                fi
+                MYSQL_USER="${mysql_auth%%:*}"
+                MYSQL_PASSWORD="${mysql_auth#*:}"
+                mysql_host_port="${mysql_host_db%%/*}"
+                HIVE_METASTORE_DB="${mysql_host_db#*/}"
+                if [ "${HIVE_METASTORE_DB}" = "${mysql_host_db}" ] || [ -z "${HIVE_METASTORE_DB}" ]; then
+                  echo "MYSQL_URL must include a database path." >&2
+                  exit 1
+                fi
+                MYSQL_HOST="${mysql_host_port%%:*}"
+                MYSQL_PORT="${mysql_host_port#*:}"
+                if [ "${MYSQL_PORT}" = "${MYSQL_HOST}" ]; then
+                  MYSQL_PORT=3306
+                fi
+              fi
+              until mysql -h"${MYSQL_HOST}" -P"${MYSQL_PORT}" -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" -e "SELECT 1" >/dev/null 2>&1; do
+                echo "waiting for mysql"
+                sleep 2
+              done
+              mysql -h"${MYSQL_HOST}" -P"${MYSQL_PORT}" -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" \
+                -e "CREATE DATABASE IF NOT EXISTS \`${HIVE_METASTORE_DB}\` DEFAULT CHARACTER SET latin1 DEFAULT COLLATE latin1_swedish_ci;" \
+                || mysql -h"${MYSQL_HOST}" -P"${MYSQL_PORT}" -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" "${HIVE_METASTORE_DB}" -e "SELECT 1"
+      restartPolicy: Never
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${{ defaults.app_name }}-config
+  labels:
+    app: ${{ defaults.app_name }}-config
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-config
+data:
+  vn-usrvn-localvn-binvn-rendervn-hivevn-confvn-sh: |
+    #!/bin/sh
+    set -eu
+
+    conf_dir="${HIVE_RENDERED_CONF_DIR:-/tmp/hive_custom_conf}"
+    mounted_dir="/mounted-conf"
+    hadoop_conf_dir="/hadoop-conf"
+    mkdir -p "${conf_dir}"
+
+    sed_escape() {
+      printf '%s' "$1" | sed 's/[\/&|]/\\&/g'
+    }
+
+    copy_base_conf_dir() {
+      src_dir="$1"
+      if [ -d "${src_dir}" ]; then
+        cp -R "${src_dir}/." "${conf_dir}/" 2>/dev/null || true
+      fi
+    }
+
+    ensure_log4j_properties() {
+      if [ ! -f "${conf_dir}/log4j.properties" ]; then
+        {
+          echo "log4j.rootLogger=INFO, console"
+          echo "log4j.appender.console=org.apache.log4j.ConsoleAppender"
+          echo "log4j.appender.console.target=System.err"
+          echo "log4j.appender.console.layout=org.apache.log4j.PatternLayout"
+          echo "log4j.appender.console.layout.ConversionPattern=%d{ISO8601} %-5p %c{2}: %m%n"
+        } > "${conf_dir}/log4j.properties"
+      fi
+    }
+
+    copy_hadoop_file() {
+      file="$1"
+      if [ ! -f "${hadoop_conf_dir}/${file}" ]; then
+        echo "Missing ${file} in Hadoop ConfigMap mounted at ${hadoop_conf_dir}." >&2
+        exit 1
+      fi
+      cp "${hadoop_conf_dir}/${file}" "${conf_dir}/${file}"
+    }
+
+    render_file() {
+      src="$1"
+      dest="$2"
+      cp "${src}" "${dest}"
+      sed -i \
+        -e "s|__HIVE_NAMESPACE__|$(sed_escape "${HIVE_NAMESPACE}")|g" \
+        -e "s|__HIVE_METASTORE_SERVICE__|$(sed_escape "${HIVE_METASTORE_SERVICE}")|g" \
+        -e "s|__HIVE_METASTORE_DB_HOST__|$(sed_escape "${HIVE_METASTORE_DB_HOST}")|g" \
+        -e "s|__HIVE_METASTORE_DB_PORT__|$(sed_escape "${HIVE_METASTORE_DB_PORT}")|g" \
+        -e "s|__HIVE_METASTORE_DB_NAME__|$(sed_escape "${HIVE_METASTORE_DB_NAME}")|g" \
+        -e "s|__HIVE_METASTORE_DB_USER__|$(sed_escape "${HIVE_METASTORE_DB_USER}")|g" \
+        -e "s|__HIVE_METASTORE_DB_PASSWORD__|$(sed_escape "${HIVE_METASTORE_DB_PASSWORD}")|g" \
+        "${dest}"
+    }
+
+    copy_base_conf_dir "${HADOOP_HOME:-/opt/hadoop}/etc/hadoop"
+    copy_base_conf_dir "${HIVE_HOME:-/opt/hive}/conf"
+    copy_hadoop_file core-site.xml
+    copy_hadoop_file hdfs-site.xml
+    copy_hadoop_file yarn-site.xml
+    render_file "${mounted_dir}/vn-hivevn-customvn-confvn-tezvn-sitevn-xml" "${conf_dir}/tez-site.xml"
+    render_file "${mounted_dir}/vn-hivevn-customvn-confvn-hivevn-sitevn-xml" "${conf_dir}/hive-site.xml"
+    ensure_log4j_properties
+  vn-usrvn-localvn-binvn-startvn-metastorevn-sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    export HADOOP_USER_NAME="${HADOOP_USER_NAME:-hadoop}"
+    export HADOOP_CLASSPATH=""
+    export HIVE_RENDERED_CONF_DIR="${HIVE_RENDERED_CONF_DIR:-/tmp/hive_custom_conf}"
+    export HIVE_CONF_DIR="${HIVE_CONF_DIR:-${HIVE_RENDERED_CONF_DIR}}"
+    export HADOOP_CONF_DIR="${HADOOP_CONF_DIR:-${HIVE_RENDERED_CONF_DIR}}"
+    get_hdfs_namenode_authority() {
+      sed -n '/<name>fs.defaultFS<\/name>/{n;s/.*<value>hdfs:\/\/\([^<]*\)<\/value>.*/\1/p;}' "${HADOOP_CONF_DIR}/core-site.xml" | head -n 1
+    }
+    : "${HIVE_METASTORE_DB_NAME:=hive_metastore}"
+    if [ -n "${HIVE_METASTORE_DB_URL:-}" ]; then
+      hive_metastore_db_url="${HIVE_METASTORE_DB_URL#mysql://}"
+      if [ "${hive_metastore_db_url}" = "${HIVE_METASTORE_DB_URL}" ]; then
+        echo "HIVE_METASTORE_DB_URL must use mysql://user:password@host:port/database format." >&2
+        exit 1
+      fi
+      hive_metastore_db_url="${hive_metastore_db_url%%\?*}"
+      hive_metastore_db_auth="${hive_metastore_db_url%@*}"
+      hive_metastore_db_host_db="${hive_metastore_db_url##*@}"
+      if [ "${hive_metastore_db_auth}" = "${hive_metastore_db_url}" ] || [ -z "${hive_metastore_db_auth}" ] || [ "${hive_metastore_db_host_db}" = "${hive_metastore_db_url}" ]; then
+        echo "HIVE_METASTORE_DB_URL must include user, password, host, and database." >&2
+        exit 1
+      fi
+      if [ "${hive_metastore_db_auth#*:}" = "${hive_metastore_db_auth}" ]; then
+        echo "HIVE_METASTORE_DB_URL must include a password." >&2
+        exit 1
+      fi
+      HIVE_METASTORE_DB_USER="${hive_metastore_db_auth%%:*}"
+      HIVE_METASTORE_DB_PASSWORD="${hive_metastore_db_auth#*:}"
+      hive_metastore_db_host_port="${hive_metastore_db_host_db%%/*}"
+      HIVE_METASTORE_DB_NAME="${hive_metastore_db_host_db#*/}"
+      if [ "${HIVE_METASTORE_DB_NAME}" = "${hive_metastore_db_host_db}" ] || [ -z "${HIVE_METASTORE_DB_NAME}" ]; then
+        echo "HIVE_METASTORE_DB_URL must include a database path." >&2
+        exit 1
+      fi
+      HIVE_METASTORE_DB_HOST="${hive_metastore_db_host_port%%:*}"
+      HIVE_METASTORE_DB_PORT="${hive_metastore_db_host_port#*:}"
+      if [ "${HIVE_METASTORE_DB_PORT}" = "${HIVE_METASTORE_DB_HOST}" ]; then
+        HIVE_METASTORE_DB_PORT=3306
+      fi
+    fi
+    : "${HIVE_METASTORE_DB_HOST:?HIVE_METASTORE_DB_HOST is required}"
+    : "${HIVE_METASTORE_DB_PORT:?HIVE_METASTORE_DB_PORT is required}"
+    : "${HIVE_METASTORE_DB_NAME:?HIVE_METASTORE_DB_NAME is required}"
+    : "${HIVE_METASTORE_DB_USER:?HIVE_METASTORE_DB_USER is required}"
+    : "${HIVE_METASTORE_DB_PASSWORD:?HIVE_METASTORE_DB_PASSWORD is required}"
+    export HIVE_METASTORE_DB_HOST HIVE_METASTORE_DB_PORT HIVE_METASTORE_DB_NAME HIVE_METASTORE_DB_USER HIVE_METASTORE_DB_PASSWORD
+
+    /bin/sh /mounted-conf/vn-usrvn-localvn-binvn-rendervn-hivevn-confvn-sh
+
+    echo "using rendered configuration directory: ${HIVE_RENDERED_CONF_DIR}"
+
+    echo "checking mysql connectivity for hive metastore schema"
+    until (echo >"/dev/tcp/${HIVE_METASTORE_DB_HOST}/${HIVE_METASTORE_DB_PORT}") >/dev/null 2>&1; do
+      echo "waiting for mysql"
+      sleep 2
+    done
+
+    echo "checking hive metastore schema"
+    if "${HIVE_HOME}/bin/schematool" -dbType mysql -info; then
+      echo "hive metastore schema already exists"
+    else
+      echo "initializing hive metastore schema"
+      "${HIVE_HOME}/bin/schematool" -dbType mysql -initSchema
+    fi
+
+    echo "checking hdfs connectivity"
+    namenode_authority="$(get_hdfs_namenode_authority)"
+    if [ -z "${namenode_authority}" ]; then
+      echo "Unable to read fs.defaultFS from ${HADOOP_CONF_DIR}/core-site.xml." >&2
+      exit 1
+    fi
+    namenode_host="${namenode_authority%%:*}"
+    namenode_port="${namenode_authority##*:}"
+    if [ "${namenode_port}" = "${namenode_host}" ]; then
+      namenode_port=8020
+    fi
+    until (echo >"/dev/tcp/${namenode_host}/${namenode_port}") >/dev/null 2>&1; do
+      echo "waiting for hdfs namenode"
+      sleep 5
+    done
+
+    echo "checking hdfs write readiness"
+    until hdfs dfs -mkdir -p /user/hive /apps/tez >/dev/null 2>&1 && printf 'ok\n' | hdfs dfs -put -f - /user/hive/.hive-write-check >/dev/null 2>&1; do
+      echo "waiting for hdfs datanode write readiness"
+      sleep 5
+    done
+    hdfs dfs -rm -f /user/hive/.hive-write-check >/dev/null 2>&1 || true
+
+    hdfs dfs -mkdir -p /tmp/hive /user/hive/warehouse /apps/tez
+    hdfs dfs -chmod 1777 /tmp/hive || true
+    hdfs dfs -chmod g+w /user/hive/warehouse || true
+
+    if hdfs dfs -test -e /apps/tez/tez-0.10.2.tar.gz; then
+      echo "tez library already exists in hdfs"
+    else
+      echo "uploading tez library to hdfs"
+      tez_archive="${TEZ_HOME}/share/tez.tar.gz"
+      if [ ! -f "${tez_archive}" ]; then
+        tez_archive="${TEZ_HOME}/tez.tar.gz"
+      fi
+      if [ ! -f "${tez_archive}" ]; then
+        echo "tez archive not found under ${TEZ_HOME}"
+        exit 1
+      fi
+      hdfs dfs -put -f "${tez_archive}" /apps/tez/tez-0.10.2.tar.gz
+    fi
+
+    echo "Starting Hive Metastore..."
+    exec "${HIVE_HOME}/bin/hive" --service metastore
+  vn-usrvn-localvn-binvn-startvn-hiveserver2vn-sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    export HADOOP_USER_NAME="${HADOOP_USER_NAME:-hadoop}"
+    export HADOOP_CLASSPATH=""
+    export HIVE_RENDERED_CONF_DIR="${HIVE_RENDERED_CONF_DIR:-/tmp/hive_custom_conf}"
+    export HIVE_CONF_DIR="${HIVE_CONF_DIR:-${HIVE_RENDERED_CONF_DIR}}"
+    export HADOOP_CONF_DIR="${HADOOP_CONF_DIR:-${HIVE_RENDERED_CONF_DIR}}"
+    get_hdfs_namenode_authority() {
+      sed -n '/<name>fs.defaultFS<\/name>/{n;s/.*<value>hdfs:\/\/\([^<]*\)<\/value>.*/\1/p;}' "${HADOOP_CONF_DIR}/core-site.xml" | head -n 1
+    }
+    : "${HIVE_METASTORE_DB_NAME:=hive_metastore}"
+    if [ -n "${HIVE_METASTORE_DB_URL:-}" ]; then
+      hive_metastore_db_url="${HIVE_METASTORE_DB_URL#mysql://}"
+      if [ "${hive_metastore_db_url}" = "${HIVE_METASTORE_DB_URL}" ]; then
+        echo "HIVE_METASTORE_DB_URL must use mysql://user:password@host:port/database format." >&2
+        exit 1
+      fi
+      hive_metastore_db_url="${hive_metastore_db_url%%\?*}"
+      hive_metastore_db_auth="${hive_metastore_db_url%@*}"
+      hive_metastore_db_host_db="${hive_metastore_db_url##*@}"
+      if [ "${hive_metastore_db_auth}" = "${hive_metastore_db_url}" ] || [ -z "${hive_metastore_db_auth}" ] || [ "${hive_metastore_db_host_db}" = "${hive_metastore_db_url}" ]; then
+        echo "HIVE_METASTORE_DB_URL must include user, password, host, and database." >&2
+        exit 1
+      fi
+      if [ "${hive_metastore_db_auth#*:}" = "${hive_metastore_db_auth}" ]; then
+        echo "HIVE_METASTORE_DB_URL must include a password." >&2
+        exit 1
+      fi
+      HIVE_METASTORE_DB_USER="${hive_metastore_db_auth%%:*}"
+      HIVE_METASTORE_DB_PASSWORD="${hive_metastore_db_auth#*:}"
+      hive_metastore_db_host_port="${hive_metastore_db_host_db%%/*}"
+      HIVE_METASTORE_DB_NAME="${hive_metastore_db_host_db#*/}"
+      if [ "${HIVE_METASTORE_DB_NAME}" = "${hive_metastore_db_host_db}" ] || [ -z "${HIVE_METASTORE_DB_NAME}" ]; then
+        echo "HIVE_METASTORE_DB_URL must include a database path." >&2
+        exit 1
+      fi
+      HIVE_METASTORE_DB_HOST="${hive_metastore_db_host_port%%:*}"
+      HIVE_METASTORE_DB_PORT="${hive_metastore_db_host_port#*:}"
+      if [ "${HIVE_METASTORE_DB_PORT}" = "${HIVE_METASTORE_DB_HOST}" ]; then
+        HIVE_METASTORE_DB_PORT=3306
+      fi
+    fi
+    : "${HIVE_METASTORE_DB_HOST:?HIVE_METASTORE_DB_HOST is required}"
+    : "${HIVE_METASTORE_DB_PORT:?HIVE_METASTORE_DB_PORT is required}"
+    : "${HIVE_METASTORE_DB_NAME:?HIVE_METASTORE_DB_NAME is required}"
+    : "${HIVE_METASTORE_DB_USER:?HIVE_METASTORE_DB_USER is required}"
+    : "${HIVE_METASTORE_DB_PASSWORD:?HIVE_METASTORE_DB_PASSWORD is required}"
+    export HIVE_METASTORE_DB_HOST HIVE_METASTORE_DB_PORT HIVE_METASTORE_DB_NAME HIVE_METASTORE_DB_USER HIVE_METASTORE_DB_PASSWORD
+
+    /bin/sh /mounted-conf/vn-usrvn-localvn-binvn-rendervn-hivevn-confvn-sh
+
+    echo "using rendered configuration directory: ${HIVE_RENDERED_CONF_DIR}"
+
+    until (echo >"/dev/tcp/${HIVE_METASTORE_SERVICE}.${HIVE_NAMESPACE}.svc.cluster.local/9083") >/dev/null 2>&1; do
+      echo "waiting for hive metastore"
+      sleep 5
+    done
+
+    namenode_authority="$(get_hdfs_namenode_authority)"
+    if [ -z "${namenode_authority}" ]; then
+      echo "Unable to read fs.defaultFS from ${HADOOP_CONF_DIR}/core-site.xml." >&2
+      exit 1
+    fi
+    namenode_host="${namenode_authority%%:*}"
+    namenode_port="${namenode_authority##*:}"
+    if [ "${namenode_port}" = "${namenode_host}" ]; then
+      namenode_port=8020
+    fi
+    until (echo >"/dev/tcp/${namenode_host}/${namenode_port}") >/dev/null 2>&1; do
+      echo "waiting for hdfs namenode"
+      sleep 5
+    done
+
+    echo "checking hdfs write readiness before hiveserver2"
+    until hdfs dfs -mkdir -p /user/hive /apps/tez >/dev/null 2>&1 && printf 'ok\n' | hdfs dfs -put -f - /user/hive/.hiveserver2-write-check >/dev/null 2>&1; do
+      echo "waiting for hdfs datanode write readiness"
+      sleep 5
+    done
+    hdfs dfs -rm -f /user/hive/.hiveserver2-write-check >/dev/null 2>&1 || true
+
+    if hdfs dfs -test -e /apps/tez/tez-0.10.2.tar.gz; then
+      echo "tez library exists in hdfs"
+    else
+      echo "tez library missing in hdfs, uploading from hiveserver2"
+      tez_archive="${TEZ_HOME}/share/tez.tar.gz"
+      if [ ! -f "${tez_archive}" ]; then
+        tez_archive="${TEZ_HOME}/tez.tar.gz"
+      fi
+      if [ ! -f "${tez_archive}" ]; then
+        echo "tez archive not found under ${TEZ_HOME}"
+        exit 1
+      fi
+      hdfs dfs -put -f "${tez_archive}" /apps/tez/tez-0.10.2.tar.gz
+    fi
+
+    tez_classpath="${TEZ_HOME}/*"
+    if [ -d "${TEZ_HOME}/lib" ]; then
+      for jar in "${TEZ_HOME}"/lib/*.jar; do
+        [ -e "${jar}" ] || continue
+        case "$(basename "${jar}")" in
+          hadoop-*|htrace-*|slf4j-*) continue ;;
+        esac
+        tez_classpath="${tez_classpath}:${jar}"
+      done
+    fi
+    export HADOOP_CLASSPATH="${tez_classpath}"
+
+    echo "Starting HiveServer2..."
+    exec "${HIVE_HOME}/bin/hive" --service hiveserver2
+  vn-hivevn-customvn-confvn-tezvn-sitevn-xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+      <property>
+        <name>tez.lib.uris</name>
+        <value>hdfs:///apps/tez/tez-0.10.2.tar.gz</value>
+      </property>
+      <property>
+        <name>tez.use.cluster.hadoop-libs</name>
+        <value>true</value>
+      </property>
+      <property>
+        <name>tez.am.resource.memory.mb</name>
+        <value>512</value>
+      </property>
+      <property>
+        <name>tez.am.launch.cmd-opts</name>
+        <value>-Xmx384m</value>
+      </property>
+      <property>
+        <name>tez.task.resource.memory.mb</name>
+        <value>512</value>
+      </property>
+      <property>
+        <name>tez.task.launch.cmd-opts</name>
+        <value>-Xmx384m</value>
+      </property>
+    </configuration>
+  vn-hivevn-customvn-confvn-hivevn-sitevn-xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+      <property>
+        <name>javax.jdo.option.ConnectionURL</name>
+        <value>jdbc:mysql://__HIVE_METASTORE_DB_HOST__:__HIVE_METASTORE_DB_PORT__/__HIVE_METASTORE_DB_NAME__?createDatabaseIfNotExist=true&amp;useSSL=false&amp;allowPublicKeyRetrieval=true&amp;serverTimezone=UTC&amp;characterEncoding=UTF-8</value>
+      </property>
+      <property>
+        <name>javax.jdo.option.ConnectionDriverName</name>
+        <value>com.mysql.cj.jdbc.Driver</value>
+      </property>
+      <property>
+        <name>javax.jdo.option.ConnectionUserName</name>
+        <value>__HIVE_METASTORE_DB_USER__</value>
+      </property>
+      <property>
+        <name>javax.jdo.option.ConnectionPassword</name>
+        <value>__HIVE_METASTORE_DB_PASSWORD__</value>
+      </property>
+      <property>
+        <name>datanucleus.schema.autoCreateAll</name>
+        <value>false</value>
+      </property>
+      <property>
+        <name>hive.metastore.schema.verification</name>
+        <value>true</value>
+      </property>
+      <property>
+        <name>hive.metastore.event.db.notification.api.auth</name>
+        <value>false</value>
+      </property>
+      <property>
+        <name>hive.metastore.warehouse.dir</name>
+        <value>hdfs:///user/hive/warehouse</value>
+      </property>
+      <property>
+        <name>hive.exec.scratchdir</name>
+        <value>hdfs:///tmp/hive</value>
+      </property>
+      <property>
+        <name>hive.metastore.uris</name>
+        <value>thrift://__HIVE_METASTORE_SERVICE__.__HIVE_NAMESPACE__.svc.cluster.local:9083</value>
+      </property>
+      <property>
+        <name>hive.execution.engine</name>
+        <value>tez</value>
+      </property>
+      <property>
+        <name>hive.tez.container.size</name>
+        <value>512</value>
+      </property>
+      <property>
+        <name>hive.server2.tez.initialize.default.sessions</name>
+        <value>false</value>
+      </property>
+      <property>
+        <name>hive.server2.thrift.bind.host</name>
+        <value>0.0.0.0</value>
+      </property>
+      <property>
+        <name>hive.server2.thrift.port</name>
+        <value>10000</value>
+      </property>
+      <property>
+        <name>hive.server2.webui.host</name>
+        <value>0.0.0.0</value>
+      </property>
+      <property>
+        <name>hive.server2.webui.port</name>
+        <value>10002</value>
+      </property>
+      <property>
+        <name>hive.server2.authentication</name>
+        <value>NONE</value>
+      </property>
+      <property>
+        <name>hive.server2.enable.doAs</name>
+        <value>false</value>
+      </property>
+    </configuration>
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ defaults.app_name }}-metastore
+  annotations:
+    originImageName: quay-kufddygt.sealoshzh.site/u-002/hive:3.1.3
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    app: ${{ defaults.app_name }}-metastore
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-metastore
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-metastore
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-metastore
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: ${{ defaults.app_name }}-metastore
+          image: quay-kufddygt.sealoshzh.site/u-002/hive:3.1.3
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - /mounted-conf/vn-usrvn-localvn-binvn-startvn-metastorevn-sh
+          env:
+            - name: SERVICE_NAME
+              value: metastore
+            - name: INIT_HDFS_TEZ
+              value: 'false'
+            - name: HIVE_HOME
+              value: /opt/hive
+            - name: HADOOP_HOME
+              value: /opt/hadoop
+            - name: TEZ_HOME
+              value: /opt/tez
+            - name: HADOOP_USER_NAME
+              value: hadoop
+            - name: HIVE_NAMESPACE
+              value: ${{ SEALOS_NAMESPACE }}
+            - name: HIVE_METASTORE_SERVICE
+              value: ${{ defaults.app_name }}-metastore
+            ${{ if(inputs.use_external_mysql === 'true') }}
+            - name: HIVE_METASTORE_DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: url
+            ${{ else() }}
+            - name: HIVE_METASTORE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: password
+            - name: HIVE_METASTORE_DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: host
+            - name: HIVE_METASTORE_DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: port
+            - name: HIVE_METASTORE_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: username
+            - name: HIVE_METASTORE_DB_NAME
+              value: hive_metastore
+            ${{ endif() }}
+          ports:
+            - name: metastore
+              containerPort: 9083
+              protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: 9083
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            tcpSocket:
+              port: 9083
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            tcpSocket:
+              port: 9083
+            initialDelaySeconds: 120
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+          volumeMounts:
+            - name: vn-mountedvn-conf
+              mountPath: /mounted-conf
+            - name: vn-hadoopvn-conf
+              mountPath: /hadoop-conf
+      volumes:
+        - name: vn-mountedvn-conf
+          configMap:
+            name: ${{ defaults.app_name }}-config
+        - name: vn-hadoopvn-conf
+          configMap:
+            name: ${{ inputs.hadoop_configmap_name }}
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ defaults.app_name }}-hiveserver2
+  annotations:
+    originImageName: quay-kufddygt.sealoshzh.site/u-002/hive:3.1.3
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    app: ${{ defaults.app_name }}-hiveserver2
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-hiveserver2
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-hiveserver2
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-hiveserver2
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: ${{ defaults.app_name }}-hiveserver2
+          image: quay-kufddygt.sealoshzh.site/u-002/hive:3.1.3
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - /mounted-conf/vn-usrvn-localvn-binvn-startvn-hiveserver2vn-sh
+          env:
+            - name: SERVICE_NAME
+              value: hiveserver2
+            - name: HIVE_HOME
+              value: /opt/hive
+            - name: HADOOP_HOME
+              value: /opt/hadoop
+            - name: TEZ_HOME
+              value: /opt/tez
+            - name: HADOOP_USER_NAME
+              value: hadoop
+            - name: HIVE_NAMESPACE
+              value: ${{ SEALOS_NAMESPACE }}
+            - name: HIVE_METASTORE_SERVICE
+              value: ${{ defaults.app_name }}-metastore
+            ${{ if(inputs.use_external_mysql === 'true') }}
+            - name: HIVE_METASTORE_DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: url
+            ${{ else() }}
+            - name: HIVE_METASTORE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: password
+            - name: HIVE_METASTORE_DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: host
+            - name: HIVE_METASTORE_DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: port
+            - name: HIVE_METASTORE_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: username
+            - name: HIVE_METASTORE_DB_NAME
+              value: hive_metastore
+            ${{ endif() }}
+          ports:
+            - name: hiveserver2
+              containerPort: 10000
+              protocol: TCP
+            - name: webui
+              containerPort: 10002
+              protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: 10000
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            tcpSocket:
+              port: 10000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            tcpSocket:
+              port: 10000
+            initialDelaySeconds: 180
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+          volumeMounts:
+            - name: vn-mountedvn-conf
+              mountPath: /mounted-conf
+            - name: vn-hadoopvn-conf
+              mountPath: /hadoop-conf
+      volumes:
+        - name: vn-mountedvn-conf
+          configMap:
+            name: ${{ defaults.app_name }}-config
+        - name: vn-hadoopvn-conf
+          configMap:
+            name: ${{ inputs.hadoop_configmap_name }}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-metastore
+  labels:
+    app: ${{ defaults.app_name }}-metastore
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-metastore
+spec:
+  type: ClusterIP
+  ports:
+    - name: metastore
+      port: 9083
+      targetPort: 9083
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}-metastore
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-hiveserver2
+  labels:
+    app: ${{ defaults.app_name }}-hiveserver2
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-hiveserver2
+spec:
+  type: ClusterIP
+  ports:
+    - name: hiveserver2
+      port: 10000
+      targetPort: 10000
+      protocol: TCP
+    - name: webui
+      port: 10002
+      targetPort: 10002
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}-hiveserver2
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${{ defaults.app_name }}-hiveserver2
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-hiveserver2
+    cloud.sealos.io/app-deploy-manager-domain: ${{ defaults.app_host }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/server-snippet: |
+      client_header_buffer_size 64k;
+      large_client_header_buffers 4 128k;
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/client-body-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '300'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '300'
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      if ($request_uri ~* \.(js|css|gif|jpe?g|png)) {
+        expires 30d;
+        add_header Cache-Control "public";
+      }
+spec:
+  rules:
+    - host: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: ${{ defaults.app_name }}-hiveserver2
+                port:
+                  number: 10002
+  tls:
+    - hosts:
+        - ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      secretName: ${{ SEALOS_CERT_SECRET_NAME }}
+
+---
+apiVersion: app.sealos.io/v1
+kind: App
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  data:
+    url: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+  displayType: normal
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/hive/logo.svg'
+  name: Apache Hive
+  type: iframe

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Apache Hive">
+  <rect width="128" height="128" rx="24" fill="#1f2937"/>
+  <path d="M30 42h68l-10 52H40L30 42Z" fill="#f59e0b"/>
+  <path d="M42 34h44l12 8H30l12-8Z" fill="#fbbf24"/>
+  <path d="M48 55h32M46 68h36M44 81h40" stroke="#111827" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="42" cy="42" r="5" fill="#111827"/>
+  <circle cx="86" cy="42" r="5" fill="#111827"/>
+</svg>

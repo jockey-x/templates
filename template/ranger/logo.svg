@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Apache Ranger">
+  <rect width="128" height="128" rx="24" fill="#14532d"/>
+  <path d="M64 24 96 38v24c0 24-13 39-32 48-19-9-32-24-32-48V38l32-14Z" fill="#22c55e"/>
+  <path d="M50 63h28M50 76h28M50 50h28" stroke="#052e16" stroke-width="7" stroke-linecap="round"/>
+  <path d="M64 24v86" stroke="#f0fdf4" stroke-width="6" opacity=".9"/>
+</svg>

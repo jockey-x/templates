@@ -1,0 +1,421 @@
+apiVersion: app.sealos.io/v1
+kind: Template
+metadata:
+  name: skywalking
+spec:
+  title: "SkyWalking"
+  url: "https://skywalking.apache.org/"
+  gitRepo: "https://github.com/apache/skywalking"
+  author: "Sealos"
+  description: "Apache SkyWalking observability platform with OAP, UI, and single-node BanyanDB storage."
+  readme: "https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/skywalking/README.md"
+  icon: "https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/skywalking/logo.svg"
+  templateType: inline
+  locale: en
+  i18n:
+    zh:
+      description: "Apache SkyWalking 可观测性平台模板，包含 OAP、UI 和单节点 BanyanDB 存储。"
+      readme: "https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/skywalking/README_zh.md"
+  categories:
+    - monitor
+    - dev-ops
+  defaults:
+    app_host:
+      type: string
+      value: skywalking-${{ random(8) }}
+    app_name:
+      type: string
+      value: skywalking-${{ random(8) }}
+  inputs:
+    oap_replicas:
+      description: "Number of SkyWalking OAP replicas."
+      type: number
+      default: "1"
+      required: true
+    ui_replicas:
+      description: "Number of SkyWalking UI replicas."
+      type: number
+      default: "1"
+      required: true
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${{ defaults.app_name }}-banyandb
+  labels:
+    app: ${{ defaults.app_name }}-banyandb
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-banyandb
+data:
+  BYDB_NODE_HOST_PROVIDER: ip
+  BYDB_GRPC_HOST: "0.0.0.0"
+  BYDB_HTTP_HOST: "0.0.0.0"
+  BYDB_STREAM_ROOT_PATH: /data/stream
+  BYDB_MEASURE_ROOT_PATH: /data/measure
+  BYDB_METADATA_ROOT_PATH: /data/metadata
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${{ defaults.app_name }}-banyandb
+  annotations:
+    originImageName: apache/skywalking-banyandb:0.10.1
+    deploy.cloud.sealos.io/minReplicas: "1"
+    deploy.cloud.sealos.io/maxReplicas: "1"
+  labels:
+    app: ${{ defaults.app_name }}-banyandb
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-banyandb
+spec:
+  serviceName: ${{ defaults.app_name }}-banyandb
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-banyandb
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-banyandb
+        cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-banyandb
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: ${{ defaults.app_name }}-banyandb
+          image: apache/skywalking-banyandb:0.10.1
+          imagePullPolicy: IfNotPresent
+          args:
+            - standalone
+          ports:
+            - name: grpc
+              containerPort: 17912
+              protocol: TCP
+            - name: http
+              containerPort: 17913
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: ${{ defaults.app_name }}-banyandb
+          startupProbe:
+            tcpSocket:
+              port: grpc
+            failureThreshold: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            failureThreshold: 12
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            failureThreshold: 6
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            successThreshold: 1
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: vn-data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: vn-data
+        annotations:
+          path: /data
+          value: "1"
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ defaults.app_name }}-oap
+  annotations:
+    originImageName: quay-kufddygt.sealoshzh.site/u-002/skywalking:10.4.0
+    deploy.cloud.sealos.io/minReplicas: "1"
+    deploy.cloud.sealos.io/maxReplicas: "${{ inputs.oap_replicas }}"
+  labels:
+    app: ${{ defaults.app_name }}-oap
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-oap
+spec:
+  replicas: ${{ inputs.oap_replicas }}
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-oap
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-oap
+        cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-oap
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: ${{ defaults.app_name }}-oap
+          image: quay-kufddygt.sealoshzh.site/u-002/skywalking:10.4.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - oap
+          ports:
+            - name: grpc
+              containerPort: 11800
+              protocol: TCP
+            - name: http
+              containerPort: 12800
+              protocol: TCP
+            - name: zipkin
+              containerPort: 9412
+              protocol: TCP
+          env:
+            - name: SW_STORAGE
+              value: banyandb
+            - name: SW_STORAGE_BANYANDB_TARGETS
+              value: ${{ defaults.app_name }}-banyandb.${{ SEALOS_NAMESPACE }}.svc:17912
+          startupProbe:
+            tcpSocket:
+              port: http
+            failureThreshold: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            tcpSocket:
+              port: http
+            failureThreshold: 12
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            failureThreshold: 6
+            initialDelaySeconds: 120
+            periodSeconds: 20
+            successThreshold: 1
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ defaults.app_name }}
+  annotations:
+    originImageName: quay-kufddygt.sealoshzh.site/u-002/skywalking:10.4.0
+    deploy.cloud.sealos.io/minReplicas: "1"
+    deploy.cloud.sealos.io/maxReplicas: "${{ inputs.ui_replicas }}"
+  labels:
+    app: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  replicas: ${{ inputs.ui_replicas }}
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}
+        cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: ${{ defaults.app_name }}
+          image: quay-kufddygt.sealoshzh.site/u-002/skywalking:10.4.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - ui
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: SW_SERVER_PORT
+              value: "8080"
+            - name: SW_OAP_ADDRESS
+              value: http://${{ defaults.app_name }}-oap.${{ SEALOS_NAMESPACE }}.svc:12800
+            - name: SW_ZIPKIN_ADDRESS
+              value: http://${{ defaults.app_name }}-oap.${{ SEALOS_NAMESPACE }}.svc:9412
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+              scheme: HTTP
+            failureThreshold: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+              scheme: HTTP
+            failureThreshold: 12
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+              scheme: HTTP
+            failureThreshold: 6
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            successThreshold: 1
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-banyandb
+  labels:
+    app: ${{ defaults.app_name }}-banyandb
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-banyandb
+spec:
+  type: ClusterIP
+  selector:
+    app: ${{ defaults.app_name }}-banyandb
+  ports:
+    - name: grpc
+      protocol: TCP
+      port: 17912
+      targetPort: grpc
+    - name: http
+      protocol: TCP
+      port: 17913
+      targetPort: http
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-oap
+  labels:
+    app: ${{ defaults.app_name }}-oap
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-oap
+spec:
+  type: ClusterIP
+  selector:
+    app: ${{ defaults.app_name }}-oap
+  ports:
+    - name: grpc
+      protocol: TCP
+      port: 11800
+      targetPort: grpc
+    - name: http
+      protocol: TCP
+      port: 12800
+      targetPort: http
+    - name: zipkin
+      protocol: TCP
+      port: 9412
+      targetPort: zipkin
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    app: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  type: ClusterIP
+  selector:
+    app: ${{ defaults.app_name }}
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: http
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    app: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager-domain: ${{ defaults.app_host }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/server-snippet: |
+      client_header_buffer_size 64k;
+      large_client_header_buffers 4 128k;
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/client-body-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '300'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '300'
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      if ($request_uri ~* \.(js|css|gif|jpe?g|png)) {
+        expires 30d;
+        add_header Cache-Control "public";
+      }
+spec:
+  rules:
+    - host: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: ${{ defaults.app_name }}
+                port:
+                  number: 8080
+  tls:
+    - hosts:
+        - ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      secretName: ${{ SEALOS_CERT_SECRET_NAME }}
+
+---
+apiVersion: app.sealos.io/v1
+kind: App
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    app: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  data:
+    url: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}/
+  displayType: normal
+  icon: "https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/skywalking/logo.svg"
+  name: "SkyWalking"
+  type: link

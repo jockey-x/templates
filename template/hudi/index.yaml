@@ -1,0 +1,407 @@
+apiVersion: app.sealos.io/v1
+kind: Template
+metadata:
+  name: hudi
+spec:
+  title: 'Apache Hudi'
+  url: 'https://hudi.apache.org/'
+  gitRepo: 'https://github.com/apache/hudi'
+  author: 'Sealos'
+  description: 'Apache Hudi is an open data lakehouse platform that brings database and data warehouse capabilities to data lakes.'
+  readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/hudi/README.md'
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/hudi/logo.png'
+  templateType: inline
+  locale: en
+  i18n:
+    zh:
+      description: 'Apache Hudi 是开放数据湖仓平台，为数据湖带来数据库和数据仓库能力。'
+      readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/hudi/README_zh.md'
+  categories:
+    - backend
+    - storage
+  defaults:
+    app_name:
+      type: string
+      value: hudi-${{ random(8) }}
+    app_host:
+      type: string
+      value: hudi-${{ random(8) }}
+  inputs:
+    worker_replicas:
+      description: 'Number of Spark Worker replicas for Hudi jobs.'
+      type: number
+      default: '1'
+      required: true
+    worker_cores:
+      description: 'CPU cores each Spark Worker advertises to applications.'
+      type: number
+      default: '1'
+      required: true
+    worker_memory:
+      description: 'Memory each Spark Worker advertises to applications, such as 512m, 1g, or 2g.'
+      type: string
+      default: '1g'
+      required: true
+    default_parallelism:
+      description: 'Default Spark parallelism used by submitted Hudi jobs.'
+      type: number
+      default: '2'
+      required: true
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${{ defaults.app_name }}-config
+  labels:
+    app: ${{ defaults.app_name }}-config
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-config
+data:
+  vn-optvn-sparkvn-confvn-sparkvn-envvn-sh: |
+    export SPARK_MASTER_HOST=0.0.0.0
+    export SPARK_MASTER_PORT=7077
+    export SPARK_MASTER_WEBUI_PORT=8080
+    export SPARK_WORKER_PORT=7078
+    export SPARK_WORKER_WEBUI_PORT=8081
+    export SPARK_WORKER_DIR=/opt/spark/work-dir
+    export SPARK_LOG_DIR=/opt/hudi/logs
+    export SPARK_LOCAL_DIRS=/opt/spark/work-dir
+    export SPARK_NO_DAEMONIZE=true
+  vn-optvn-sparkvn-confvn-sparkvn-defaultsvn-conf: |
+    spark.master spark://${{ defaults.app_name }}-master.${{ SEALOS_NAMESPACE }}.svc.cluster.local:7077
+    spark.serializer org.apache.spark.serializer.KryoSerializer
+    spark.sql.catalog.spark_catalog org.apache.spark.sql.hudi.catalog.HoodieCatalog
+    spark.sql.extensions org.apache.spark.sql.hudi.HoodieSparkSessionExtension
+    spark.kryo.registrator org.apache.spark.HoodieSparkKryoRegistrar
+    spark.jars /opt/hudi/bundles/hudi-spark3.3-bundle_2.12-0.15.0.jar
+    spark.driver.bindAddress 0.0.0.0
+    spark.ui.reverseProxy false
+    spark.default.parallelism ${{ inputs.default_parallelism }}
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ defaults.app_name }}-master
+  annotations:
+    originImageName: quay-kufddygt.sealoshzh.site/u-002/hudi:0.15.0
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    app: ${{ defaults.app_name }}-master
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-master
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-master
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-master
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: ${{ defaults.app_name }}-master
+          image: quay-kufddygt.sealoshzh.site/u-002/hudi:0.15.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              mkdir -p "${SPARK_HOME}/conf" "${SPARK_HOME}/work-dir" "${HUDI_HOME}/work" "${HUDI_HOME}/logs"
+              cp /mounted-conf/vn-optvn-sparkvn-confvn-sparkvn-envvn-sh "${SPARK_HOME}/conf/spark-env.sh"
+              cp /mounted-conf/vn-optvn-sparkvn-confvn-sparkvn-defaultsvn-conf "${SPARK_HOME}/conf/spark-defaults.conf"
+              if [ -z "${JAVA_HOME:-}" ] || [ ! -x "${JAVA_HOME}/bin/java" ]; then
+                JAVA_BIN="$(command -v java)"
+                JAVA_REAL="$(readlink -f "${JAVA_BIN}" 2>/dev/null || echo "${JAVA_BIN}")"
+                export JAVA_HOME="$(dirname "$(dirname "${JAVA_REAL}")")"
+              fi
+              exec "${SPARK_HOME}/sbin/start-master.sh" --host 0.0.0.0 --port 7077 --webui-port 8080
+          env:
+            - name: SPARK_HOME
+              value: /opt/spark
+            - name: HUDI_HOME
+              value: /opt/hudi
+            - name: SPARK_NO_DAEMONIZE
+              value: 'true'
+            - name: SPARK_DAEMON_MEMORY
+              value: 512m
+          ports:
+            - name: master-rpc
+              containerPort: 7077
+              protocol: TCP
+            - name: master-ui
+              containerPort: 8080
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 120
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 2Gi
+          securityContext:
+            runAsUser: 10003
+            runAsGroup: 10003
+          volumeMounts:
+            - name: vn-mountedvn-conf
+              mountPath: /mounted-conf
+      volumes:
+        - name: vn-mountedvn-conf
+          configMap:
+            name: ${{ defaults.app_name }}-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-master
+  labels:
+    app: ${{ defaults.app_name }}-master
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-master
+spec:
+  type: ClusterIP
+  publishNotReadyAddresses: true
+  ports:
+    - name: master-rpc
+      port: 7077
+      targetPort: 7077
+      protocol: TCP
+    - name: master-ui
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}-master
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ defaults.app_name }}-worker
+  annotations:
+    originImageName: quay-kufddygt.sealoshzh.site/u-002/hudi:0.15.0
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '${{ inputs.worker_replicas }}'
+  labels:
+    app: ${{ defaults.app_name }}-worker
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-worker
+spec:
+  replicas: ${{ inputs.worker_replicas }}
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-worker
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-worker
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: ${{ defaults.app_name }}-worker
+          image: quay-kufddygt.sealoshzh.site/u-002/hudi:0.15.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              master_host="${SPARK_MASTER_SERVICE}.${SPARK_NAMESPACE}.svc.cluster.local"
+              until (echo >"/dev/tcp/${master_host}/7077") >/dev/null 2>&1; do
+                echo waiting for Spark master
+                sleep 5
+              done
+              mkdir -p "${SPARK_HOME}/conf" "${SPARK_HOME}/work-dir" "${HUDI_HOME}/work" "${HUDI_HOME}/logs"
+              cp /mounted-conf/vn-optvn-sparkvn-confvn-sparkvn-envvn-sh "${SPARK_HOME}/conf/spark-env.sh"
+              cp /mounted-conf/vn-optvn-sparkvn-confvn-sparkvn-defaultsvn-conf "${SPARK_HOME}/conf/spark-defaults.conf"
+              if [ -z "${JAVA_HOME:-}" ] || [ ! -x "${JAVA_HOME}/bin/java" ]; then
+                JAVA_BIN="$(command -v java)"
+                JAVA_REAL="$(readlink -f "${JAVA_BIN}" 2>/dev/null || echo "${JAVA_BIN}")"
+                export JAVA_HOME="$(dirname "$(dirname "${JAVA_REAL}")")"
+              fi
+              exec "${SPARK_HOME}/sbin/start-worker.sh" "spark://${master_host}:7077" --host 0.0.0.0 --port 7078 --webui-port 8081 --cores "${SPARK_WORKER_CORES}" --memory "${SPARK_WORKER_MEMORY}" --work-dir /opt/spark/work-dir
+          env:
+            - name: SPARK_HOME
+              value: /opt/spark
+            - name: HUDI_HOME
+              value: /opt/hudi
+            - name: SPARK_NO_DAEMONIZE
+              value: 'true'
+            - name: SPARK_DAEMON_MEMORY
+              value: 512m
+            - name: SPARK_MASTER_SERVICE
+              value: ${{ defaults.app_name }}-master
+            - name: SPARK_NAMESPACE
+              value: ${{ SEALOS_NAMESPACE }}
+            - name: SPARK_WORKER_CORES
+              value: '${{ inputs.worker_cores }}'
+            - name: SPARK_WORKER_MEMORY
+              value: ${{ inputs.worker_memory }}
+          ports:
+            - name: worker-rpc
+              containerPort: 7078
+              protocol: TCP
+            - name: worker-ui
+              containerPort: 8081
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8081
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8081
+            initialDelaySeconds: 120
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 2Gi
+          securityContext:
+            runAsUser: 10003
+            runAsGroup: 10003
+          volumeMounts:
+            - name: vn-mountedvn-conf
+              mountPath: /mounted-conf
+      volumes:
+        - name: vn-mountedvn-conf
+          configMap:
+            name: ${{ defaults.app_name }}-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-worker
+  labels:
+    app: ${{ defaults.app_name }}-worker
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-worker
+spec:
+  type: ClusterIP
+  publishNotReadyAddresses: true
+  ports:
+    - name: worker-rpc
+      port: 7078
+      targetPort: 7078
+      protocol: TCP
+    - name: worker-ui
+      port: 8081
+      targetPort: 8081
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}-worker
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${{ defaults.app_name }}-master
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-master
+    cloud.sealos.io/app-deploy-manager-domain: ${{ defaults.app_host }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/server-snippet: |
+      client_header_buffer_size 64k;
+      large_client_header_buffers 4 128k;
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/client-body-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '300'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '300'
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      if ($request_uri ~* \.(js|css|gif|jpe?g|png)) {
+        expires 30d;
+        add_header Cache-Control "public";
+      }
+spec:
+  rules:
+    - host: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: ${{ defaults.app_name }}-master
+                port:
+                  number: 8080
+  tls:
+    - hosts:
+        - ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      secretName: ${{ SEALOS_CERT_SECRET_NAME }}
+
+---
+apiVersion: app.sealos.io/v1
+kind: App
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  data:
+    url: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+  displayType: normal
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/hudi/logo.png'
+  name: Apache Hudi
+  type: iframe

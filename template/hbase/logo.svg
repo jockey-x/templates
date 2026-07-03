@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Apache HBase">
+  <rect width="128" height="128" rx="24" fill="#1e1b4b"/>
+  <path d="M28 38h72v52H28z" fill="#6366f1"/>
+  <path d="M28 54h72M28 73h72M48 38v52M80 38v52" stroke="#eef2ff" stroke-width="6"/>
+  <path d="M38 26h52l10 12H28l10-12Z" fill="#a5b4fc"/>
+  <circle cx="64" cy="64" r="10" fill="#f97316"/>
+</svg>

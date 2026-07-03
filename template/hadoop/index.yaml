@@ -1,0 +1,1126 @@
+apiVersion: app.sealos.io/v1
+kind: Template
+metadata:
+  name: hadoop
+spec:
+  title: 'Apache Hadoop'
+  url: 'https://hadoop.apache.org/'
+  gitRepo: 'https://github.com/apache/hadoop'
+  author: 'Sealos'
+  description: 'Apache Hadoop is a framework for distributed storage and processing of large data sets with HDFS, YARN, and MapReduce2.'
+  readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/hadoop/README.md'
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/hadoop/logo.svg'
+  templateType: inline
+  locale: en
+  i18n:
+    zh:
+      description: 'Apache Hadoop 是一个用于大规模数据集分布式存储与处理的开源框架，核心组件包括 HDFS、YARN 和 MapReduce2。'
+      readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/hadoop/README_zh.md'
+  categories:
+    - storage
+    - dev-ops
+  defaults:
+    app_name:
+      type: string
+      value: hadoop-${{ random(8) }}
+    app_host:
+      type: string
+      value: hadoop-${{ random(8) }}
+  inputs:
+    datanode_replicas:
+      description: 'Number of HDFS DataNode replicas.'
+      type: number
+      default: '3'
+      required: true
+    nodemanager_replicas:
+      description: 'Number of YARN NodeManager replicas.'
+      type: number
+      default: '3'
+      required: true
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${{ defaults.app_name }}-config
+  labels:
+    app: ${{ defaults.app_name }}-config
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-config
+data:
+  core-site.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+      <property>
+        <name>fs.defaultFS</name>
+        <value>hdfs://${{ defaults.app_name }}-namenode.${{ SEALOS_NAMESPACE }}.svc.cluster.local:8020</value>
+      </property>
+      <property>
+        <name>hadoop.tmp.dir</name>
+        <value>/data/tmp</value>
+      </property>
+      <property>
+        <name>hadoop.proxyuser.hadoop.hosts</name>
+        <value>*</value>
+      </property>
+      <property>
+        <name>hadoop.proxyuser.hadoop.groups</name>
+        <value>*</value>
+      </property>
+    </configuration>
+  hdfs-site.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+      <property>
+        <name>dfs.replication</name>
+        <value>${{ inputs.datanode_replicas }}</value>
+      </property>
+      <property>
+        <name>dfs.namenode.rpc-address</name>
+        <value>${{ defaults.app_name }}-namenode.${{ SEALOS_NAMESPACE }}.svc.cluster.local:8020</value>
+      </property>
+      <property>
+        <name>dfs.namenode.rpc-bind-host</name>
+        <value>0.0.0.0</value>
+      </property>
+      <property>
+        <name>dfs.namenode.name.dir</name>
+        <value>file:///data/dfs/name</value>
+      </property>
+      <property>
+        <name>dfs.datanode.data.dir</name>
+        <value>file:///data/dfs/data</value>
+      </property>
+      <property>
+        <name>dfs.namenode.http-address</name>
+        <value>0.0.0.0:9870</value>
+      </property>
+      <property>
+        <name>dfs.datanode.http.address</name>
+        <value>0.0.0.0:9864</value>
+      </property>
+      <property>
+        <name>dfs.datanode.address</name>
+        <value>0.0.0.0:9866</value>
+      </property>
+      <property>
+        <name>dfs.datanode.ipc.address</name>
+        <value>0.0.0.0:9867</value>
+      </property>
+      <property>
+        <name>dfs.namenode.datanode.registration.ip-hostname-check</name>
+        <value>false</value>
+      </property>
+      <property>
+        <name>dfs.permissions.enabled</name>
+        <value>false</value>
+      </property>
+    </configuration>
+  mapred-site.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+      <property>
+        <name>mapreduce.framework.name</name>
+        <value>yarn</value>
+      </property>
+      <property>
+        <name>mapreduce.jobhistory.address</name>
+        <value>${{ defaults.app_name }}-mapreduce2.${{ SEALOS_NAMESPACE }}.svc.cluster.local:10020</value>
+      </property>
+      <property>
+        <name>mapreduce.jobhistory.bind-host</name>
+        <value>0.0.0.0</value>
+      </property>
+      <property>
+        <name>mapreduce.jobhistory.webapp.address</name>
+        <value>0.0.0.0:19888</value>
+      </property>
+    </configuration>
+  yarn-site.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+      <property>
+        <name>yarn.resourcemanager.hostname</name>
+        <value>${{ defaults.app_name }}-resourcemanager.${{ SEALOS_NAMESPACE }}.svc.cluster.local</value>
+      </property>
+      <property>
+        <name>yarn.resourcemanager.bind-host</name>
+        <value>0.0.0.0</value>
+      </property>
+      <property>
+        <name>yarn.resourcemanager.webapp.address</name>
+        <value>0.0.0.0:8088</value>
+      </property>
+      <property>
+        <name>yarn.resourcemanager.address</name>
+        <value>${{ defaults.app_name }}-resourcemanager.${{ SEALOS_NAMESPACE }}.svc.cluster.local:8032</value>
+      </property>
+      <property>
+        <name>yarn.resourcemanager.scheduler.address</name>
+        <value>${{ defaults.app_name }}-resourcemanager.${{ SEALOS_NAMESPACE }}.svc.cluster.local:8030</value>
+      </property>
+      <property>
+        <name>yarn.resourcemanager.resource-tracker.address</name>
+        <value>${{ defaults.app_name }}-resourcemanager.${{ SEALOS_NAMESPACE }}.svc.cluster.local:8031</value>
+      </property>
+      <property>
+        <name>yarn.resourcemanager.admin.address</name>
+        <value>${{ defaults.app_name }}-resourcemanager.${{ SEALOS_NAMESPACE }}.svc.cluster.local:8033</value>
+      </property>
+      <property>
+        <name>yarn.nodemanager.webapp.address</name>
+        <value>0.0.0.0:8042</value>
+      </property>
+      <property>
+        <name>yarn.nodemanager.local-dirs</name>
+        <value>/data/yarn-local</value>
+      </property>
+      <property>
+        <name>yarn.nodemanager.log-dirs</name>
+        <value>/logs/yarn</value>
+      </property>
+      <property>
+        <name>yarn.nodemanager.aux-services</name>
+        <value>mapreduce_shuffle</value>
+      </property>
+      <property>
+        <name>yarn.nodemanager.env-whitelist</name>
+        <value>JAVA_HOME,HADOOP_COMMON_HOME,HADOOP_HDFS_HOME,HADOOP_CONF_DIR,CLASSPATH_PREPEND_DISTCACHE,HADOOP_YARN_HOME,HADOOP_MAPRED_HOME</value>
+      </property>
+    </configuration>
+  workers: |
+    localhost
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${{ defaults.app_name }}-namenode
+  annotations:
+    originImageName: quay-kufddygt.sealoshzh.site/u-002/hadoop:3.3.6
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    app: ${{ defaults.app_name }}-namenode
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-namenode
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  minReadySeconds: 10
+  serviceName: ${{ defaults.app_name }}-namenode
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-namenode
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-namenode
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: init-permissions
+          image: quay-kufddygt.sealoshzh.site/u-002/hadoop:3.3.6
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - mkdir -p /data /logs && chown -R hadoop:hadoop /data /logs
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: vn-data
+              mountPath: /data
+            - name: vn-logs
+              mountPath: /logs
+      containers:
+        - name: ${{ defaults.app_name }}-namenode
+          image: quay-kufddygt.sealoshzh.site/u-002/hadoop:3.3.6
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              mkdir -p "${HADOOP_CONF_DIR}" "${HADOOP_LOG_DIR}" "${HADOOP_PID_DIR}" "${HADOOP_DATA_DIR}/dfs/name" "${HADOOP_DATA_DIR}/tmp"
+              if [ -z "${JAVA_HOME:-}" ] || [ ! -x "${JAVA_HOME}/bin/java" ]; then
+                JAVA_BIN="$(command -v java)"
+                JAVA_REAL="$(readlink -f "${JAVA_BIN}" 2>/dev/null || echo "${JAVA_BIN}")"
+                export JAVA_HOME="$(dirname "$(dirname "${JAVA_REAL}")")"
+              fi
+              printf '%s\n' "export JAVA_HOME=${JAVA_HOME}" > "${HADOOP_CONF_DIR}/hadoop-env.sh"
+              printf '%s\n' "export HADOOP_LOG_DIR=${HADOOP_LOG_DIR}" >> "${HADOOP_CONF_DIR}/hadoop-env.sh"
+              printf '%s\n' "export HADOOP_PID_DIR=${HADOOP_PID_DIR}" >> "${HADOOP_CONF_DIR}/hadoop-env.sh"
+              cp /mounted-conf/core-site.xml "${HADOOP_CONF_DIR}/core-site.xml"
+              cp /mounted-conf/hdfs-site.xml "${HADOOP_CONF_DIR}/hdfs-site.xml"
+              cp /mounted-conf/mapred-site.xml "${HADOOP_CONF_DIR}/mapred-site.xml"
+              cp /mounted-conf/yarn-site.xml "${HADOOP_CONF_DIR}/yarn-site.xml"
+              cp /mounted-conf/workers "${HADOOP_CONF_DIR}/workers"
+              if [ ! -f "${HADOOP_DATA_DIR}/dfs/name/current/VERSION" ]; then
+                hdfs namenode -format -force -nonInteractive
+              fi
+              hdfs --daemon start namenode
+              trap 'hdfs --daemon stop namenode; exit 0' TERM INT
+              touch "${HADOOP_LOG_DIR}/namenode.log"
+              tail -F "${HADOOP_LOG_DIR}"/*.log &
+              wait $!
+          env:
+            - name: HADOOP_HOME
+              value: /opt/hadoop
+            - name: HADOOP_CONF_DIR
+              value: /etc/hadoop
+            - name: HADOOP_LOG_DIR
+              value: /logs
+            - name: HADOOP_PID_DIR
+              value: /tmp/hadoop-pids
+            - name: HADOOP_DATA_DIR
+              value: /data
+            - name: HADOOP_OPTS
+              value: -Djava.net.preferIPv4Stack=true
+            - name: HDFS_NAMENODE_OPTS
+              value: -Djava.net.preferIPv4Stack=true
+          ports:
+            - name: hdfs-rpc
+              containerPort: 8020
+              protocol: TCP
+            - name: namenode-ui
+              containerPort: 9870
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /
+              port: 9870
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 9870
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 9870
+            initialDelaySeconds: 120
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+          volumeMounts:
+            - name: vn-mountedvn-conf
+              mountPath: /mounted-conf
+            - name: vn-data
+              mountPath: /data
+            - name: vn-logs
+              mountPath: /logs
+      volumes:
+        - name: vn-mountedvn-conf
+          configMap:
+            name: ${{ defaults.app_name }}-config
+  volumeClaimTemplates:
+    - metadata:
+        name: vn-data
+        annotations:
+          path: /data
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: vn-logs
+        annotations:
+          path: /logs
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-namenode
+  labels:
+    app: ${{ defaults.app_name }}-namenode
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-namenode
+spec:
+  type: ClusterIP
+  publishNotReadyAddresses: true
+  ports:
+    - name: hdfs-rpc
+      port: 8020
+      targetPort: 8020
+      protocol: TCP
+    - name: namenode-ui
+      port: 9870
+      targetPort: 9870
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}-namenode
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${{ defaults.app_name }}-datanode
+  annotations:
+    originImageName: quay-kufddygt.sealoshzh.site/u-002/hadoop:3.3.6
+    deploy.cloud.sealos.io/minReplicas: '${{ inputs.datanode_replicas }}'
+    deploy.cloud.sealos.io/maxReplicas: '${{ inputs.datanode_replicas }}'
+  labels:
+    app: ${{ defaults.app_name }}-datanode
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-datanode
+spec:
+  replicas: ${{ inputs.datanode_replicas }}
+  revisionHistoryLimit: 1
+  minReadySeconds: 10
+  serviceName: ${{ defaults.app_name }}-datanode
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-datanode
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-datanode
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: init-permissions
+          image: quay-kufddygt.sealoshzh.site/u-002/hadoop:3.3.6
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - mkdir -p /data /logs && chown -R hadoop:hadoop /data /logs
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: vn-data
+              mountPath: /data
+            - name: vn-logs
+              mountPath: /logs
+      containers:
+        - name: ${{ defaults.app_name }}-datanode
+          image: quay-kufddygt.sealoshzh.site/u-002/hadoop:3.3.6
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              namenode_host="${{ defaults.app_name }}-namenode.${{ SEALOS_NAMESPACE }}.svc.cluster.local"
+              until (echo >"/dev/tcp/${namenode_host}/8020") >/dev/null 2>&1; do
+                echo waiting for namenode
+                sleep 5
+              done
+              mkdir -p "${HADOOP_CONF_DIR}" "${HADOOP_LOG_DIR}" "${HADOOP_PID_DIR}" "${HADOOP_DATA_DIR}/dfs/data" "${HADOOP_DATA_DIR}/tmp"
+              if [ -z "${JAVA_HOME:-}" ] || [ ! -x "${JAVA_HOME}/bin/java" ]; then
+                JAVA_BIN="$(command -v java)"
+                JAVA_REAL="$(readlink -f "${JAVA_BIN}" 2>/dev/null || echo "${JAVA_BIN}")"
+                export JAVA_HOME="$(dirname "$(dirname "${JAVA_REAL}")")"
+              fi
+              printf '%s\n' "export JAVA_HOME=${JAVA_HOME}" > "${HADOOP_CONF_DIR}/hadoop-env.sh"
+              printf '%s\n' "export HADOOP_LOG_DIR=${HADOOP_LOG_DIR}" >> "${HADOOP_CONF_DIR}/hadoop-env.sh"
+              printf '%s\n' "export HADOOP_PID_DIR=${HADOOP_PID_DIR}" >> "${HADOOP_CONF_DIR}/hadoop-env.sh"
+              cp /mounted-conf/core-site.xml "${HADOOP_CONF_DIR}/core-site.xml"
+              cp /mounted-conf/hdfs-site.xml "${HADOOP_CONF_DIR}/hdfs-site.xml"
+              cp /mounted-conf/mapred-site.xml "${HADOOP_CONF_DIR}/mapred-site.xml"
+              cp /mounted-conf/yarn-site.xml "${HADOOP_CONF_DIR}/yarn-site.xml"
+              cp /mounted-conf/workers "${HADOOP_CONF_DIR}/workers"
+              hdfs --daemon start datanode
+              trap 'hdfs --daemon stop datanode; exit 0' TERM INT
+              touch "${HADOOP_LOG_DIR}/datanode.log"
+              tail -F "${HADOOP_LOG_DIR}"/*.log &
+              wait $!
+          env:
+            - name: HADOOP_HOME
+              value: /opt/hadoop
+            - name: HADOOP_CONF_DIR
+              value: /etc/hadoop
+            - name: HADOOP_LOG_DIR
+              value: /logs
+            - name: HADOOP_PID_DIR
+              value: /tmp/hadoop-pids
+            - name: HADOOP_DATA_DIR
+              value: /data
+            - name: HADOOP_OPTS
+              value: -Djava.net.preferIPv4Stack=true
+            - name: HDFS_DATANODE_OPTS
+              value: -Djava.net.preferIPv4Stack=true
+          ports:
+            - name: datanode-ui
+              containerPort: 9864
+              protocol: TCP
+            - name: datanode-xfer
+              containerPort: 9866
+              protocol: TCP
+            - name: datanode-ipc
+              containerPort: 9867
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /
+              port: 9864
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 9864
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 9864
+            initialDelaySeconds: 120
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+          volumeMounts:
+            - name: vn-mountedvn-conf
+              mountPath: /mounted-conf
+            - name: vn-data
+              mountPath: /data
+            - name: vn-logs
+              mountPath: /logs
+      volumes:
+        - name: vn-mountedvn-conf
+          configMap:
+            name: ${{ defaults.app_name }}-config
+  volumeClaimTemplates:
+    - metadata:
+        name: vn-data
+        annotations:
+          path: /data
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: vn-logs
+        annotations:
+          path: /logs
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-datanode
+  labels:
+    app: ${{ defaults.app_name }}-datanode
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-datanode
+spec:
+  type: ClusterIP
+  ports:
+    - name: datanode-ui
+      port: 9864
+      targetPort: 9864
+      protocol: TCP
+    - name: datanode-xfer
+      port: 9866
+      targetPort: 9866
+      protocol: TCP
+    - name: datanode-ipc
+      port: 9867
+      targetPort: 9867
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}-datanode
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${{ defaults.app_name }}-resourcemanager
+  annotations:
+    originImageName: quay-kufddygt.sealoshzh.site/u-002/hadoop:3.3.6
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    app: ${{ defaults.app_name }}-resourcemanager
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-resourcemanager
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  minReadySeconds: 10
+  serviceName: ${{ defaults.app_name }}-resourcemanager
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-resourcemanager
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-resourcemanager
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: init-permissions
+          image: quay-kufddygt.sealoshzh.site/u-002/hadoop:3.3.6
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - mkdir -p /logs && chown -R hadoop:hadoop /logs
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: vn-logs
+              mountPath: /logs
+      containers:
+        - name: ${{ defaults.app_name }}-resourcemanager
+          image: quay-kufddygt.sealoshzh.site/u-002/hadoop:3.3.6
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              mkdir -p "${HADOOP_CONF_DIR}" "${HADOOP_LOG_DIR}" "${HADOOP_PID_DIR}"
+              if [ -z "${JAVA_HOME:-}" ] || [ ! -x "${JAVA_HOME}/bin/java" ]; then
+                JAVA_BIN="$(command -v java)"
+                JAVA_REAL="$(readlink -f "${JAVA_BIN}" 2>/dev/null || echo "${JAVA_BIN}")"
+                export JAVA_HOME="$(dirname "$(dirname "${JAVA_REAL}")")"
+              fi
+              printf '%s\n' "export JAVA_HOME=${JAVA_HOME}" > "${HADOOP_CONF_DIR}/hadoop-env.sh"
+              printf '%s\n' "export HADOOP_LOG_DIR=${HADOOP_LOG_DIR}" >> "${HADOOP_CONF_DIR}/hadoop-env.sh"
+              printf '%s\n' "export HADOOP_PID_DIR=${HADOOP_PID_DIR}" >> "${HADOOP_CONF_DIR}/hadoop-env.sh"
+              cp /mounted-conf/core-site.xml "${HADOOP_CONF_DIR}/core-site.xml"
+              cp /mounted-conf/hdfs-site.xml "${HADOOP_CONF_DIR}/hdfs-site.xml"
+              cp /mounted-conf/mapred-site.xml "${HADOOP_CONF_DIR}/mapred-site.xml"
+              cp /mounted-conf/yarn-site.xml "${HADOOP_CONF_DIR}/yarn-site.xml"
+              cp /mounted-conf/workers "${HADOOP_CONF_DIR}/workers"
+              yarn --daemon start resourcemanager
+              trap 'yarn --daemon stop resourcemanager; exit 0' TERM INT
+              touch "${HADOOP_LOG_DIR}/resourcemanager.log"
+              tail -F "${HADOOP_LOG_DIR}"/*.log &
+              wait $!
+          env:
+            - name: HADOOP_HOME
+              value: /opt/hadoop
+            - name: HADOOP_CONF_DIR
+              value: /etc/hadoop
+            - name: HADOOP_LOG_DIR
+              value: /logs
+            - name: HADOOP_PID_DIR
+              value: /tmp/hadoop-pids
+            - name: HADOOP_OPTS
+              value: -Djava.net.preferIPv4Stack=true
+            - name: YARN_RESOURCEMANAGER_OPTS
+              value: -Djava.net.preferIPv4Stack=true
+          ports:
+            - name: rm-scheduler
+              containerPort: 8030
+              protocol: TCP
+            - name: rm-tracker
+              containerPort: 8031
+              protocol: TCP
+            - name: rm-rpc
+              containerPort: 8032
+              protocol: TCP
+            - name: rm-admin
+              containerPort: 8033
+              protocol: TCP
+            - name: yarn-ui
+              containerPort: 8088
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /
+              port: 8088
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8088
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8088
+            initialDelaySeconds: 120
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+          volumeMounts:
+            - name: vn-mountedvn-conf
+              mountPath: /mounted-conf
+            - name: vn-logs
+              mountPath: /logs
+      volumes:
+        - name: vn-mountedvn-conf
+          configMap:
+            name: ${{ defaults.app_name }}-config
+  volumeClaimTemplates:
+    - metadata:
+        name: vn-logs
+        annotations:
+          path: /logs
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-resourcemanager
+  labels:
+    app: ${{ defaults.app_name }}-resourcemanager
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-resourcemanager
+spec:
+  type: ClusterIP
+  ports:
+    - name: rm-scheduler
+      port: 8030
+      targetPort: 8030
+      protocol: TCP
+    - name: rm-tracker
+      port: 8031
+      targetPort: 8031
+      protocol: TCP
+    - name: rm-rpc
+      port: 8032
+      targetPort: 8032
+      protocol: TCP
+    - name: rm-admin
+      port: 8033
+      targetPort: 8033
+      protocol: TCP
+    - name: yarn-ui
+      port: 8088
+      targetPort: 8088
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}-resourcemanager
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${{ defaults.app_name }}-nodemanager
+  annotations:
+    originImageName: quay-kufddygt.sealoshzh.site/u-002/hadoop:3.3.6
+    deploy.cloud.sealos.io/minReplicas: '${{ inputs.nodemanager_replicas }}'
+    deploy.cloud.sealos.io/maxReplicas: '${{ inputs.nodemanager_replicas }}'
+  labels:
+    app: ${{ defaults.app_name }}-nodemanager
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-nodemanager
+spec:
+  replicas: ${{ inputs.nodemanager_replicas }}
+  revisionHistoryLimit: 1
+  minReadySeconds: 10
+  serviceName: ${{ defaults.app_name }}-nodemanager
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-nodemanager
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-nodemanager
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: init-permissions
+          image: quay-kufddygt.sealoshzh.site/u-002/hadoop:3.3.6
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - mkdir -p /data /logs && chown -R hadoop:hadoop /data /logs
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: vn-data
+              mountPath: /data
+            - name: vn-logs
+              mountPath: /logs
+      containers:
+        - name: ${{ defaults.app_name }}-nodemanager
+          image: quay-kufddygt.sealoshzh.site/u-002/hadoop:3.3.6
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              until (echo >"/dev/tcp/${{ defaults.app_name }}-resourcemanager.${{ SEALOS_NAMESPACE }}.svc.cluster.local/8088") >/dev/null 2>&1; do
+                echo waiting for resourcemanager
+                sleep 5
+              done
+              mkdir -p "${HADOOP_CONF_DIR}" "${HADOOP_LOG_DIR}" "${HADOOP_PID_DIR}" "${HADOOP_DATA_DIR}/yarn-local" "${HADOOP_DATA_DIR}/tmp"
+              if [ -z "${JAVA_HOME:-}" ] || [ ! -x "${JAVA_HOME}/bin/java" ]; then
+                JAVA_BIN="$(command -v java)"
+                JAVA_REAL="$(readlink -f "${JAVA_BIN}" 2>/dev/null || echo "${JAVA_BIN}")"
+                export JAVA_HOME="$(dirname "$(dirname "${JAVA_REAL}")")"
+              fi
+              printf '%s\n' "export JAVA_HOME=${JAVA_HOME}" > "${HADOOP_CONF_DIR}/hadoop-env.sh"
+              printf '%s\n' "export HADOOP_LOG_DIR=${HADOOP_LOG_DIR}" >> "${HADOOP_CONF_DIR}/hadoop-env.sh"
+              printf '%s\n' "export HADOOP_PID_DIR=${HADOOP_PID_DIR}" >> "${HADOOP_CONF_DIR}/hadoop-env.sh"
+              cp /mounted-conf/core-site.xml "${HADOOP_CONF_DIR}/core-site.xml"
+              cp /mounted-conf/hdfs-site.xml "${HADOOP_CONF_DIR}/hdfs-site.xml"
+              cp /mounted-conf/mapred-site.xml "${HADOOP_CONF_DIR}/mapred-site.xml"
+              cp /mounted-conf/yarn-site.xml "${HADOOP_CONF_DIR}/yarn-site.xml"
+              cp /mounted-conf/workers "${HADOOP_CONF_DIR}/workers"
+              yarn --daemon start nodemanager
+              trap 'yarn --daemon stop nodemanager; exit 0' TERM INT
+              touch "${HADOOP_LOG_DIR}/nodemanager.log"
+              tail -F "${HADOOP_LOG_DIR}"/*.log &
+              wait $!
+          env:
+            - name: HADOOP_HOME
+              value: /opt/hadoop
+            - name: HADOOP_CONF_DIR
+              value: /etc/hadoop
+            - name: HADOOP_LOG_DIR
+              value: /logs
+            - name: HADOOP_PID_DIR
+              value: /tmp/hadoop-pids
+            - name: HADOOP_DATA_DIR
+              value: /data
+            - name: HADOOP_OPTS
+              value: -Djava.net.preferIPv4Stack=true
+            - name: YARN_NODEMANAGER_OPTS
+              value: -Djava.net.preferIPv4Stack=true
+          ports:
+            - name: nodemanager-ui
+              containerPort: 8042
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /
+              port: 8042
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8042
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8042
+            initialDelaySeconds: 120
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+          volumeMounts:
+            - name: vn-mountedvn-conf
+              mountPath: /mounted-conf
+            - name: vn-data
+              mountPath: /data
+            - name: vn-logs
+              mountPath: /logs
+      volumes:
+        - name: vn-mountedvn-conf
+          configMap:
+            name: ${{ defaults.app_name }}-config
+  volumeClaimTemplates:
+    - metadata:
+        name: vn-data
+        annotations:
+          path: /data
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: vn-logs
+        annotations:
+          path: /logs
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-nodemanager
+  labels:
+    app: ${{ defaults.app_name }}-nodemanager
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-nodemanager
+spec:
+  type: ClusterIP
+  ports:
+    - name: nodemanager-ui
+      port: 8042
+      targetPort: 8042
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}-nodemanager
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ defaults.app_name }}-mapreduce2
+  annotations:
+    originImageName: quay-kufddygt.sealoshzh.site/u-002/hadoop:3.3.6
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    app: ${{ defaults.app_name }}-mapreduce2
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-mapreduce2
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-mapreduce2
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-mapreduce2
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: ${{ defaults.app_name }}-mapreduce2
+          image: quay-kufddygt.sealoshzh.site/u-002/hadoop:3.3.6
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              namenode_host="${{ defaults.app_name }}-namenode.${{ SEALOS_NAMESPACE }}.svc.cluster.local"
+              until (echo >"/dev/tcp/${namenode_host}/8020") >/dev/null 2>&1; do
+                echo waiting for namenode
+                sleep 5
+              done
+              mkdir -p "${HADOOP_CONF_DIR}" "${HADOOP_LOG_DIR}" "${HADOOP_PID_DIR}"
+              if [ -z "${JAVA_HOME:-}" ] || [ ! -x "${JAVA_HOME}/bin/java" ]; then
+                JAVA_BIN="$(command -v java)"
+                JAVA_REAL="$(readlink -f "${JAVA_BIN}" 2>/dev/null || echo "${JAVA_BIN}")"
+                export JAVA_HOME="$(dirname "$(dirname "${JAVA_REAL}")")"
+              fi
+              printf '%s\n' "export JAVA_HOME=${JAVA_HOME}" > "${HADOOP_CONF_DIR}/hadoop-env.sh"
+              printf '%s\n' "export HADOOP_LOG_DIR=${HADOOP_LOG_DIR}" >> "${HADOOP_CONF_DIR}/hadoop-env.sh"
+              printf '%s\n' "export HADOOP_PID_DIR=${HADOOP_PID_DIR}" >> "${HADOOP_CONF_DIR}/hadoop-env.sh"
+              cp /mounted-conf/core-site.xml "${HADOOP_CONF_DIR}/core-site.xml"
+              cp /mounted-conf/hdfs-site.xml "${HADOOP_CONF_DIR}/hdfs-site.xml"
+              cp /mounted-conf/mapred-site.xml "${HADOOP_CONF_DIR}/mapred-site.xml"
+              cp /mounted-conf/yarn-site.xml "${HADOOP_CONF_DIR}/yarn-site.xml"
+              cp /mounted-conf/workers "${HADOOP_CONF_DIR}/workers"
+              mapred --daemon start historyserver
+              trap 'mapred --daemon stop historyserver; exit 0' TERM INT
+              touch "${HADOOP_LOG_DIR}/mapreduce2-historyserver.log"
+              tail -F "${HADOOP_LOG_DIR}"/*.log &
+              wait $!
+          env:
+            - name: HADOOP_HOME
+              value: /opt/hadoop
+            - name: HADOOP_CONF_DIR
+              value: /etc/hadoop
+            - name: HADOOP_LOG_DIR
+              value: /logs
+            - name: HADOOP_PID_DIR
+              value: /tmp/hadoop-pids
+            - name: HADOOP_OPTS
+              value: -Djava.net.preferIPv4Stack=true
+          ports:
+            - name: mapreduce2-rpc
+              containerPort: 10020
+              protocol: TCP
+            - name: mapreduce2-ui
+              containerPort: 19888
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /
+              port: 19888
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 19888
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 19888
+            initialDelaySeconds: 120
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+          volumeMounts:
+            - name: vn-mountedvn-conf
+              mountPath: /mounted-conf
+      volumes:
+        - name: vn-mountedvn-conf
+          configMap:
+            name: ${{ defaults.app_name }}-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-mapreduce2
+  labels:
+    app: ${{ defaults.app_name }}-mapreduce2
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-mapreduce2
+spec:
+  type: ClusterIP
+  ports:
+    - name: mapreduce2-rpc
+      port: 10020
+      targetPort: 10020
+      protocol: TCP
+    - name: mapreduce2-ui
+      port: 19888
+      targetPort: 19888
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}-mapreduce2
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${{ defaults.app_name }}-namenode
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-namenode
+    cloud.sealos.io/app-deploy-manager-domain: ${{ defaults.app_host }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/server-snippet: |
+      client_header_buffer_size 64k;
+      large_client_header_buffers 4 128k;
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/client-body-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '300'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '300'
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      if ($request_uri ~* \.(js|css|gif|jpe?g|png)) {
+        expires 30d;
+        add_header Cache-Control "public";
+      }
+spec:
+  rules:
+    - host: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: ${{ defaults.app_name }}-namenode
+                port:
+                  number: 9870
+  tls:
+    - hosts:
+        - ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      secretName: ${{ SEALOS_CERT_SECRET_NAME }}
+
+---
+apiVersion: app.sealos.io/v1
+kind: App
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  data:
+    url: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+  displayType: normal
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/hadoop/logo.svg'
+  name: Apache Hadoop
+  type: iframe

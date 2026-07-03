@@ -1,0 +1,1130 @@
+apiVersion: app.sealos.io/v1
+kind: Template
+metadata:
+  name: ranger-kms
+spec:
+  title: 'Apache Ranger KMS'
+  url: 'https://ranger.apache.org/'
+  gitRepo: 'https://github.com/apache/ranger'
+  author: 'Sealos'
+  description: 'Apache Ranger KMS is a Hadoop Key Management Server implementation integrated with Apache Ranger security policies.'
+  readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/ranger-kms/README.md'
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/ranger-kms/logo.svg'
+  templateType: inline
+  locale: en
+  i18n:
+    zh:
+      description: 'Apache Ranger KMS 是集成 Ranger 安全策略的 Hadoop 密钥管理服务实现。'
+      readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/ranger-kms/README_zh.md'
+  categories:
+    - dev-ops
+    - backend
+  defaults:
+    app_name:
+      type: string
+      value: ranger-kms-${{ random(8) }}
+    app_host:
+      type: string
+      value: ranger-kms-${{ random(8) }}
+  inputs:
+    ranger_admin_service:
+      description: 'Ranger Admin Service name deployed in the same namespace.'
+      type: string
+      default: 'ranger'
+      required: true
+    ranger_admin_password:
+      description: 'Ranger Admin password used by both admin and keyadmin accounts from the Ranger Admin template.'
+      type: string
+      required: true
+    master_key_password:
+      description: 'Ranger KMS master key password.'
+      type: string
+      default: 'RangerA1${{ random(8) }}'
+      required: true
+    use_external_mysql:
+      description: 'Use an external MySQL database instead of creating the built-in MySQL database.'
+      type: boolean
+      default: 'false'
+      required: false
+    external_mysql_url:
+      description: 'External MySQL connection string, for example mysql://user:password@mysql.example.com:3306/rangerkms.'
+      type: string
+      default: ''
+      required: true
+      if: inputs.use_external_mysql === 'true'
+
+---
+${{ if(inputs.use_external_mysql === 'false') }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-mysql
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-mysql
+    app.kubernetes.io/managed-by: kbcli
+  name: ${{ defaults.app_name }}-mysql
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-mysql
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-mysql
+    app.kubernetes.io/managed-by: kbcli
+  name: ${{ defaults.app_name }}-mysql
+rules:
+  - apiGroups:
+      - '*'
+    resources:
+      - '*'
+    verbs:
+      - '*'
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-mysql
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-mysql
+    app.kubernetes.io/managed-by: kbcli
+  name: ${{ defaults.app_name }}-mysql
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ${{ defaults.app_name }}-mysql
+subjects:
+  - kind: ServiceAccount
+    name: ${{ defaults.app_name }}-mysql
+
+---
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: Cluster
+metadata:
+  labels:
+    kb.io/database: ac-mysql-8.0.30-1
+    clusterdefinition.kubeblocks.io/name: apecloud-mysql
+    clusterversion.kubeblocks.io/name: ac-mysql-8.0.30-1
+  name: ${{ defaults.app_name }}-mysql
+spec:
+  affinity:
+    nodeLabels: {}
+    podAntiAffinity: Preferred
+    tenancy: SharedNode
+    topologyKeys:
+      - kubernetes.io/hostname
+  clusterDefinitionRef: apecloud-mysql
+  clusterVersionRef: ac-mysql-8.0.30-1
+  componentSpecs:
+    - componentDefRef: mysql
+      monitor: true
+      name: mysql
+      noCreatePDB: false
+      replicas: 1
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 100m
+          memory: 512Mi
+      serviceAccountName: ${{ defaults.app_name }}-mysql
+      switchPolicy:
+        type: Noop
+      volumeClaimTemplates:
+        - name: data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 1Gi
+            storageClassName: openebs-backup
+  terminationPolicy: Delete
+  tolerations: []
+${{ else() }}
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${{ defaults.app_name }}-mysql-conn-credential
+  labels:
+    app: ${{ defaults.app_name }}-mysql
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-mysql
+type: Opaque
+stringData:
+  url: "${{ inputs.external_mysql_url }}"
+${{ endif() }}
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${{ defaults.app_name }}-mysql-init
+spec:
+  completions: 1
+  template:
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: mysql-init
+          image: mysql:8.0
+          imagePullPolicy: IfNotPresent
+          env:
+            ${{ if(inputs.use_external_mysql === 'true') }}
+            - name: MYSQL_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: url
+            ${{ else() }}
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: password
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: username
+            - name: MYSQL_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: host
+            - name: MYSQL_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: port
+            - name: DATABASE_NAME
+              value: rangerkms
+            ${{ endif() }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              if [ -n "${MYSQL_URL:-}" ]; then
+                mysql_url="${MYSQL_URL#mysql://}"
+                if [ "${mysql_url}" = "${MYSQL_URL}" ]; then
+                  echo "MYSQL_URL must use mysql://user:password@host:port/database format." >&2
+                  exit 1
+                fi
+                mysql_url="${mysql_url%%\?*}"
+                mysql_auth="${mysql_url%@*}"
+                mysql_host_db="${mysql_url##*@}"
+                if [ "${mysql_auth}" = "${mysql_url}" ] || [ -z "${mysql_auth}" ] || [ "${mysql_host_db}" = "${mysql_url}" ]; then
+                  echo "MYSQL_URL must include user, password, host, and database." >&2
+                  exit 1
+                fi
+                if [ "${mysql_auth#*:}" = "${mysql_auth}" ]; then
+                  echo "MYSQL_URL must include a password." >&2
+                  exit 1
+                fi
+                MYSQL_USER="${mysql_auth%%:*}"
+                MYSQL_PASSWORD="${mysql_auth#*:}"
+                mysql_host_port="${mysql_host_db%%/*}"
+                DATABASE_NAME="${mysql_host_db#*/}"
+                if [ "${DATABASE_NAME}" = "${mysql_host_db}" ] || [ -z "${DATABASE_NAME}" ]; then
+                  echo "MYSQL_URL must include a database path." >&2
+                  exit 1
+                fi
+                MYSQL_HOST="${mysql_host_port%%:*}"
+                MYSQL_PORT="${mysql_host_port#*:}"
+                if [ "${MYSQL_PORT}" = "${MYSQL_HOST}" ]; then
+                  MYSQL_PORT=3306
+                fi
+              fi
+              until mysql -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} -e "SELECT 1" >/dev/null 2>&1; do
+                echo "MySQL is not ready, retrying..."
+                sleep 2
+              done
+              mysql -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} \
+                -e "CREATE DATABASE IF NOT EXISTS \`${DATABASE_NAME}\` DEFAULT CHARACTER SET utf8mb4 DEFAULT COLLATE utf8mb4_unicode_ci;" \
+                || mysql -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} "${DATABASE_NAME}" -e "SELECT 1"
+      restartPolicy: Never
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${{ defaults.app_name }}-config
+  labels:
+    app: ${{ defaults.app_name }}-config
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-config
+data:
+  install.properties: |
+    setup_mode=SeparateDBA
+    DB_FLAVOR=MYSQL
+    COMPONENT_INSTALL_DIR_NAME=${RANGER_KMS_HOME}
+    SQL_CONNECTOR_JAR=/usr/share/java/mysql-connector-java.jar
+    db_root_user=${RANGER_KMS_DB_USER}
+    db_root_password=${RANGER_KMS_DB_PASSWORD}
+    db_host=${RANGER_KMS_DB_HOST}:${RANGER_KMS_DB_PORT}
+    db_name=${RANGER_KMS_DB_NAME}
+    db_user=${RANGER_KMS_DB_USER}
+    db_password=${RANGER_KMS_DB_PASSWORD}
+    POLICY_MGR_URL=http://${RANGER_ADMIN_SERVICE}.${RANGER_KMS_NAMESPACE}.svc.cluster.local:6080
+    REPOSITORY_NAME=${RANGER_KMS_SERVICE}
+    KMS_MASTER_KEY_PASSWD=${RANGER_KMS_MASTER_KEY_PASS}
+    cred_keystore_filename=${RANGER_KMS_HOME}/ews/webapp/WEB-INF/classes/conf/.jceks/rangerkms.jceks
+    audit_store=none
+  dbks-site.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+      <property>
+        <name>ranger.service.host</name>
+        <value>0.0.0.0</value>
+      </property>
+      <property>
+        <name>hadoop.kms.http.host</name>
+        <value>0.0.0.0</value>
+      </property>
+      <property>
+        <name>hadoop.kms.http.port</name>
+        <value>9292</value>
+      </property>
+      <property>
+        <name>ranger.service.http.enabled</name>
+        <value>true</value>
+      </property>
+      <property>
+        <name>ranger.service.http.port</name>
+        <value>9292</value>
+      </property>
+      <property>
+        <name>ranger.service.shutdown.port</name>
+        <value>7085</value>
+      </property>
+      <property>
+        <name>ranger.service.shutdown.command</name>
+        <value>SHUTDOWN</value>
+      </property>
+      <property>
+        <name>ranger.contextName</name>
+        <value>/kms</value>
+      </property>
+      <property>
+        <name>xa.webapp.dir</name>
+        <value>${RANGER_KMS_HOME}/ews/webapp</value>
+      </property>
+      <property>
+        <name>kms.log.dir</name>
+        <value>${RANGER_KMS_HOME}/ews/logs</value>
+      </property>
+      <property>
+        <name>hadoop.kms.authentication.type</name>
+        <value>simple</value>
+      </property>
+      <property>
+        <name>hadoop.kms.key.provider.uri</name>
+        <value>dbks://http@localhost:9292/kms</value>
+      </property>
+      <property>
+        <name>ranger.plugin.kms.policy.rest.url</name>
+        <value>http://${RANGER_ADMIN_SERVICE}.${RANGER_KMS_NAMESPACE}.svc.cluster.local:6080</value>
+      </property>
+      <property>
+        <name>ranger.db.encrypt.key.password</name>
+        <value>_</value>
+      </property>
+      <property>
+        <name>ranger.kms.service.masterkey.password.cipher</name>
+        <value>AES</value>
+      </property>
+      <property>
+        <name>ranger.kms.service.masterkey.password.size</name>
+        <value>256</value>
+      </property>
+      <property>
+        <name>ranger.kms.service.masterkey.password.salt.size</name>
+        <value>8</value>
+      </property>
+      <property>
+        <name>ranger.kms.service.masterkey.password.salt</name>
+        <value>abcdefghijklmnopqrstuvwxyz01234567890</value>
+      </property>
+      <property>
+        <name>ranger.kms.service.masterkey.password.iteration.count</name>
+        <value>1000</value>
+      </property>
+      <property>
+        <name>ranger.kms.service.masterkey.password.encryption.algorithm</name>
+        <value>PBEWithMD5AndDES</value>
+      </property>
+      <property>
+        <name>ranger.kms.service.masterkey.password.md.algorithm</name>
+        <value>SHA</value>
+      </property>
+      <property>
+        <name>ranger.ks.jpa.jdbc.url</name>
+        <value>jdbc:log4jdbc:mysql://${RANGER_KMS_DB_HOST}:${RANGER_KMS_DB_PORT}/${RANGER_KMS_DB_NAME}</value>
+      </property>
+      <property>
+        <name>ranger.ks.jpa.jdbc.user</name>
+        <value>${RANGER_KMS_DB_USER}</value>
+      </property>
+      <property>
+        <name>ranger.ks.jpa.jdbc.password</name>
+        <value>_</value>
+      </property>
+      <property>
+        <name>ranger.ks.jpa.jdbc.credential.provider.path</name>
+        <value>${RANGER_KMS_HOME}/ews/webapp/WEB-INF/classes/conf/.jceks/rangerkms.jceks</value>
+      </property>
+      <property>
+        <name>ranger.ks.jpa.jdbc.credential.alias</name>
+        <value>ranger.ks.jpa.jdbc.credential.alias</value>
+      </property>
+      <property>
+        <name>ranger.ks.masterkey.credential.alias</name>
+        <value>ranger.ks.masterkey.password</value>
+      </property>
+      <property>
+        <name>ranger.ks.jpa.jdbc.dialect</name>
+        <value>org.eclipse.persistence.platform.database.MySQLPlatform</value>
+      </property>
+      <property>
+        <name>ranger.ks.jpa.jdbc.driver</name>
+        <value>net.sf.log4jdbc.DriverSpy</value>
+      </property>
+      <property>
+        <name>ranger.ks.jdbc.sqlconnectorjar</name>
+        <value>/usr/share/java/mysql-connector-java.jar</value>
+      </property>
+      <property>
+        <name>ranger.kms.keysecure.enabled</name>
+        <value>false</value>
+      </property>
+      <property>
+        <name>ranger.kms.keysecure.UserPassword.Authentication</name>
+        <value>true</value>
+      </property>
+      <property>
+        <name>ranger.kms.keysecure.masterkey.name</name>
+        <value>safenetmasterkey</value>
+      </property>
+      <property>
+        <name>ranger.kms.keysecure.login.username</name>
+        <value>user1</value>
+      </property>
+      <property>
+        <name>ranger.kms.keysecure.login.password</name>
+        <value>_</value>
+      </property>
+      <property>
+        <name>ranger.kms.keysecure.login.password.alias</name>
+        <value>ranger.ks.login.password</value>
+      </property>
+      <property>
+        <name>ranger.kms.keysecure.provider.type</name>
+        <value>SunPKCS11</value>
+      </property>
+    </configuration>
+  ranger-kms-site.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+      <property>
+        <name>ranger.service.host</name>
+        <value>0.0.0.0</value>
+      </property>
+      <property>
+        <name>hadoop.kms.http.host</name>
+        <value>0.0.0.0</value>
+      </property>
+      <property>
+        <name>hadoop.kms.http.port</name>
+        <value>9292</value>
+      </property>
+      <property>
+        <name>ranger.service.http.enabled</name>
+        <value>true</value>
+      </property>
+      <property>
+        <name>ranger.service.http.port</name>
+        <value>9292</value>
+      </property>
+      <property>
+        <name>ranger.service.shutdown.port</name>
+        <value>7085</value>
+      </property>
+      <property>
+        <name>ranger.service.shutdown.command</name>
+        <value>SHUTDOWN</value>
+      </property>
+      <property>
+        <name>ranger.contextName</name>
+        <value>/kms</value>
+      </property>
+      <property>
+        <name>xa.webapp.dir</name>
+        <value>${RANGER_KMS_HOME}/ews/webapp</value>
+      </property>
+      <property>
+        <name>kms.log.dir</name>
+        <value>${RANGER_KMS_HOME}/ews/logs</value>
+      </property>
+      <property>
+        <name>hadoop.kms.authentication.type</name>
+        <value>simple</value>
+      </property>
+      <property>
+        <name>hadoop.kms.key.provider.uri</name>
+        <value>dbks://http@localhost:9292/kms</value>
+      </property>
+      <property>
+        <name>ranger.plugin.kms.policy.rest.url</name>
+        <value>http://${RANGER_ADMIN_SERVICE}.${RANGER_KMS_NAMESPACE}.svc.cluster.local:6080</value>
+      </property>
+      <property>
+        <name>ranger.service.https.port</name>
+        <value>9393</value>
+      </property>
+      <property>
+        <name>ranger.service.https.attrib.ssl.enabled</name>
+        <value>false</value>
+      </property>
+      <property>
+        <name>ajp.enabled</name>
+        <value>false</value>
+      </property>
+      <property>
+        <name>ranger.credential.provider.path</name>
+        <value>${RANGER_KMS_HOME}/ews/webapp/WEB-INF/classes/conf/.jceks/rangerkms.jceks</value>
+      </property>
+    </configuration>
+  kms-site.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+      <property>
+        <name>hadoop.kms.key.provider.uri</name>
+        <value>dbks://http@localhost:9292/kms</value>
+      </property>
+      <property>
+        <name>hadoop.security.keystore.JavaKeyStoreProvider.password</name>
+        <value>none</value>
+      </property>
+      <property>
+        <name>hadoop.kms.cache.enable</name>
+        <value>true</value>
+      </property>
+      <property>
+        <name>hadoop.kms.cache.timeout.ms</name>
+        <value>600000</value>
+      </property>
+      <property>
+        <name>hadoop.kms.current.key.cache.timeout.ms</name>
+        <value>30000</value>
+      </property>
+      <property>
+        <name>hadoop.kms.audit.aggregation.window.ms</name>
+        <value>10000</value>
+      </property>
+      <property>
+        <name>hadoop.kms.authentication.type</name>
+        <value>simple</value>
+      </property>
+      <property>
+        <name>hadoop.kms.authentication.signer.secret.provider</name>
+        <value>random</value>
+      </property>
+      <property>
+        <name>hadoop.kms.security.authorization.manager</name>
+        <value>org.apache.ranger.authorization.kms.authorizer.RangerKmsAuthorizer</value>
+      </property>
+      <property>
+        <name>hadoop.kms.proxyuser.ranger.groups</name>
+        <value>*</value>
+      </property>
+      <property>
+        <name>hadoop.kms.proxyuser.ranger.hosts</name>
+        <value>*</value>
+      </property>
+      <property>
+        <name>hadoop.kms.proxyuser.ranger.users</name>
+        <value>*</value>
+      </property>
+    </configuration>
+  kms-logback.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <configuration scan="true">
+      <appender name="kms" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <Append>true</Append>
+        <File>${kms.log.dir}/ranger-kms-${hostname}-${user}.log</File>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+          <fileNamePattern>${kms.log.dir}/ranger-kms-${hostname}-${user}.log.%d{yyyy-MM-dd}</fileNamePattern>
+          <maxHistory>15</maxHistory>
+          <cleanHistoryOnStart>true</cleanHistoryOnStart>
+        </rollingPolicy>
+        <encoder>
+          <pattern>%d %-5level [%thread] %logger - %msg%n</pattern>
+        </encoder>
+      </appender>
+      <appender name="kms-audit" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <Append>true</Append>
+        <File>${kms.log.dir}/kms-audit-${hostname}-${user}.log</File>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+          <fileNamePattern>${kms.log.dir}/kms-audit-${hostname}-${user}.log.%d{yyyy-MM-dd}</fileNamePattern>
+          <maxHistory>15</maxHistory>
+          <cleanHistoryOnStart>true</cleanHistoryOnStart>
+        </rollingPolicy>
+        <encoder>
+          <pattern>%d %-5level [%thread] %logger - %msg%n</pattern>
+        </encoder>
+      </appender>
+      <logger name="kms-audit" additivity="false" level="INFO">
+        <appender-ref ref="kms-audit"/>
+      </logger>
+      <root level="INFO">
+        <appender-ref ref="kms"/>
+      </root>
+    </configuration>
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${{ defaults.app_name }}
+  annotations:
+    originImageName: sealos.hub:5000/u-002/ranger-kms:2.4.0
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    app: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  minReadySeconds: 10
+  serviceName: ${{ defaults.app_name }}
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: init-permissions
+          image: sealos.hub:5000/u-002/ranger-kms:2.4.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - mkdir -p /data /logs && chown -R 1000:1000 /data /logs && chmod -R ug+rwX /data /logs
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: vn-data
+              mountPath: /data
+            - name: vn-logs
+              mountPath: /logs
+      containers:
+        - name: ${{ defaults.app_name }}
+          image: sealos.hub:5000/u-002/ranger-kms:2.4.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              : "${RANGER_HOME:=/opt/ranger}"
+              : "${RANGER_KMS_HOME:=${RANGER_HOME}/ranger-2.4.0-kms}"
+              : "${RANGER_KMS_CONF_DIR:=${RANGER_KMS_HOME}/ews/webapp/WEB-INF/classes/conf}"
+              if [ ! -x "${RANGER_KMS_HOME}/setup.sh" ]; then
+                echo "Unable to find Ranger KMS home under ${RANGER_KMS_HOME}" >&2
+                exit 1
+              fi
+              export RANGER_HOME RANGER_KMS_HOME RANGER_KMS_CONF_DIR
+              export PATH="${RANGER_KMS_HOME}/ews/webapp/WEB-INF/classes/conf:${RANGER_KMS_HOME}/ews/webapp/WEB-INF/lib:${RANGER_KMS_HOME}/ews/lib:${RANGER_KMS_HOME}/bin:${PATH}"
+              if [ -z "${JAVA_HOME:-}" ] || [ ! -x "${JAVA_HOME}/bin/java" ]; then
+                JAVA_BIN="$(command -v java)"
+                JAVA_REAL="$(readlink -f "${JAVA_BIN}" 2>/dev/null || realpath "${JAVA_BIN}" 2>/dev/null || echo "${JAVA_BIN}")"
+                export JAVA_HOME="$(dirname "$(dirname "${JAVA_REAL}")")"
+              fi
+              : "${RANGER_KMS_DB_NAME:=rangerkms}"
+              if [ -n "${RANGER_KMS_DB_URL:-}" ]; then
+                ranger_kms_db_url="${RANGER_KMS_DB_URL#mysql://}"
+                if [ "${ranger_kms_db_url}" = "${RANGER_KMS_DB_URL}" ]; then
+                  echo "RANGER_KMS_DB_URL must use mysql://user:password@host:port/database format." >&2
+                  exit 1
+                fi
+                ranger_kms_db_url="${ranger_kms_db_url%%\?*}"
+                ranger_kms_db_auth="${ranger_kms_db_url%@*}"
+                ranger_kms_db_host_db="${ranger_kms_db_url##*@}"
+                if [ "${ranger_kms_db_auth}" = "${ranger_kms_db_url}" ] || [ -z "${ranger_kms_db_auth}" ] || [ "${ranger_kms_db_host_db}" = "${ranger_kms_db_url}" ]; then
+                  echo "RANGER_KMS_DB_URL must include user, password, host, and database." >&2
+                  exit 1
+                fi
+                if [ "${ranger_kms_db_auth#*:}" = "${ranger_kms_db_auth}" ]; then
+                  echo "RANGER_KMS_DB_URL must include a password." >&2
+                  exit 1
+                fi
+                RANGER_KMS_DB_USER="${ranger_kms_db_auth%%:*}"
+                RANGER_KMS_DB_PASSWORD="${ranger_kms_db_auth#*:}"
+                ranger_kms_db_host_port="${ranger_kms_db_host_db%%/*}"
+                RANGER_KMS_DB_NAME="${ranger_kms_db_host_db#*/}"
+                if [ "${RANGER_KMS_DB_NAME}" = "${ranger_kms_db_host_db}" ] || [ -z "${RANGER_KMS_DB_NAME}" ]; then
+                  echo "RANGER_KMS_DB_URL must include a database path." >&2
+                  exit 1
+                fi
+                RANGER_KMS_DB_HOST="${ranger_kms_db_host_port%%:*}"
+                RANGER_KMS_DB_PORT="${ranger_kms_db_host_port#*:}"
+                if [ "${RANGER_KMS_DB_PORT}" = "${RANGER_KMS_DB_HOST}" ]; then
+                  RANGER_KMS_DB_PORT=3306
+                fi
+              fi
+              mkdir -p "${RANGER_KMS_CONF_DIR}" /data /logs
+              until (echo >"/dev/tcp/${RANGER_KMS_DB_HOST}/${RANGER_KMS_DB_PORT}") >/dev/null 2>&1; do
+                echo waiting for ranger kms database
+                sleep 5
+              done
+              until (echo >"/dev/tcp/${RANGER_ADMIN_SERVICE}.${RANGER_KMS_NAMESPACE}.svc.cluster.local/6080") >/dev/null 2>&1; do
+                echo waiting for ranger admin
+                sleep 5
+              done
+              cp /mounted-conf/install.properties /tmp/ranger-kms-install-overrides.properties
+              sed -i "s#\${RANGER_KMS_DB_USER}#${RANGER_KMS_DB_USER}#g" /tmp/ranger-kms-install-overrides.properties
+              sed -i "s#\${RANGER_KMS_DB_PASSWORD}#${RANGER_KMS_DB_PASSWORD}#g" /tmp/ranger-kms-install-overrides.properties
+              sed -i "s#\${RANGER_KMS_DB_HOST}#${RANGER_KMS_DB_HOST}#g" /tmp/ranger-kms-install-overrides.properties
+              sed -i "s#\${RANGER_KMS_DB_PORT}#${RANGER_KMS_DB_PORT}#g" /tmp/ranger-kms-install-overrides.properties
+              sed -i "s#\${RANGER_KMS_DB_NAME}#${RANGER_KMS_DB_NAME}#g" /tmp/ranger-kms-install-overrides.properties
+              sed -i "s#\${RANGER_ADMIN_SERVICE}#${RANGER_ADMIN_SERVICE}#g" /tmp/ranger-kms-install-overrides.properties
+              sed -i "s#\${RANGER_KMS_NAMESPACE}#${RANGER_KMS_NAMESPACE}#g" /tmp/ranger-kms-install-overrides.properties
+              sed -i "s#\${RANGER_KMS_SERVICE}#${RANGER_KMS_SERVICE}#g" /tmp/ranger-kms-install-overrides.properties
+              sed -i "s#\${RANGER_KMS_MASTER_KEY_PASS}#${RANGER_KMS_MASTER_KEY_PASS}#g" /tmp/ranger-kms-install-overrides.properties
+              sed -i "s#\${RANGER_KMS_HOME}#${RANGER_KMS_HOME}#g" /tmp/ranger-kms-install-overrides.properties
+              sed -i "s#\${RANGER_KMS_BIND_HOST}#${RANGER_KMS_BIND_HOST}#g" /tmp/ranger-kms-install-overrides.properties
+              awk -F= '
+                NR==FNR {
+                  if ($0 ~ /^[[:space:]]*#/ || $0 ~ /^[[:space:]]*$/) next
+                  key=$1
+                  overrides[key]=$0
+                  next
+                }
+                {
+                  split($0, parts, "=")
+                  key=parts[1]
+                  if (key in overrides) {
+                    print overrides[key]
+                    seen[key]=1
+                  } else {
+                    print
+                  }
+                }
+                END {
+                  for (key in overrides) {
+                    if (!(key in seen)) print overrides[key]
+                  }
+                }
+              ' /tmp/ranger-kms-install-overrides.properties "${RANGER_KMS_HOME}/install.properties" > /tmp/ranger-kms-install.properties
+              mv /tmp/ranger-kms-install.properties "${RANGER_KMS_HOME}/install.properties"
+              cp /mounted-conf/dbks-site.xml "${RANGER_KMS_CONF_DIR}/dbks-site.xml"
+              sed -i "s#\${RANGER_ADMIN_SERVICE}#${RANGER_ADMIN_SERVICE}#g" "${RANGER_KMS_CONF_DIR}/dbks-site.xml"
+              sed -i "s#\${RANGER_KMS_NAMESPACE}#${RANGER_KMS_NAMESPACE}#g" "${RANGER_KMS_CONF_DIR}/dbks-site.xml"
+              sed -i "s#\${RANGER_KMS_HOME}#${RANGER_KMS_HOME}#g" "${RANGER_KMS_CONF_DIR}/dbks-site.xml"
+              sed -i "s#\${RANGER_KMS_BIND_HOST}#${RANGER_KMS_BIND_HOST}#g" "${RANGER_KMS_CONF_DIR}/dbks-site.xml"
+              sed -i "s#\${RANGER_KMS_DB_HOST}#${RANGER_KMS_DB_HOST}#g" "${RANGER_KMS_CONF_DIR}/dbks-site.xml"
+              sed -i "s#\${RANGER_KMS_DB_PORT}#${RANGER_KMS_DB_PORT}#g" "${RANGER_KMS_CONF_DIR}/dbks-site.xml"
+              sed -i "s#\${RANGER_KMS_DB_NAME}#${RANGER_KMS_DB_NAME}#g" "${RANGER_KMS_CONF_DIR}/dbks-site.xml"
+              sed -i "s#\${RANGER_KMS_DB_USER}#${RANGER_KMS_DB_USER}#g" "${RANGER_KMS_CONF_DIR}/dbks-site.xml"
+              cp /mounted-conf/ranger-kms-site.xml "${RANGER_KMS_CONF_DIR}/ranger-kms-site.xml"
+              sed -i "s#\${RANGER_ADMIN_SERVICE}#${RANGER_ADMIN_SERVICE}#g" "${RANGER_KMS_CONF_DIR}/ranger-kms-site.xml"
+              sed -i "s#\${RANGER_KMS_NAMESPACE}#${RANGER_KMS_NAMESPACE}#g" "${RANGER_KMS_CONF_DIR}/ranger-kms-site.xml"
+              sed -i "s#\${RANGER_KMS_HOME}#${RANGER_KMS_HOME}#g" "${RANGER_KMS_CONF_DIR}/ranger-kms-site.xml"
+              sed -i "s#\${RANGER_KMS_BIND_HOST}#${RANGER_KMS_BIND_HOST}#g" "${RANGER_KMS_CONF_DIR}/ranger-kms-site.xml"
+              cp /mounted-conf/kms-site.xml "${RANGER_KMS_CONF_DIR}/kms-site.xml"
+              sed -i "s#\${RANGER_ADMIN_SERVICE}#${RANGER_ADMIN_SERVICE}#g" "${RANGER_KMS_CONF_DIR}/kms-site.xml"
+              sed -i "s#\${RANGER_KMS_NAMESPACE}#${RANGER_KMS_NAMESPACE}#g" "${RANGER_KMS_CONF_DIR}/kms-site.xml"
+              sed -i "s#\${RANGER_KMS_HOME}#${RANGER_KMS_HOME}#g" "${RANGER_KMS_CONF_DIR}/kms-site.xml"
+              sed -i "s#\${RANGER_KMS_BIND_HOST}#${RANGER_KMS_BIND_HOST}#g" "${RANGER_KMS_CONF_DIR}/kms-site.xml"
+              cp /mounted-conf/kms-logback.xml "${RANGER_KMS_CONF_DIR}/kms-logback.xml"
+              export RANGER_KMS_STORE_JDBC="jdbc:mysql://${RANGER_KMS_DB_HOST}:${RANGER_KMS_DB_PORT}/${RANGER_KMS_DB_NAME}"
+              export RANGER_KMS_STORE_USER="${RANGER_KMS_DB_USER}"
+              export RANGER_KMS_STORE_PASS="${RANGER_KMS_DB_PASSWORD}"
+              export RANGER_KMS_STORE_JDBC RANGER_KMS_STORE_USER RANGER_KMS_STORE_PASS RANGER_KMS_MASTER_KEY_PASS RANGER_KMS_DB_NAME
+              export LOGFILE=/logs/ranger-kms-setup.log
+              touch "${LOGFILE}"
+              exec /opt/entrypoint.sh
+          env:
+            - name: RANGER_HOME
+              value: /opt/ranger
+            - name: RANGER_KMS_HOME
+              value: /opt/ranger/ranger-2.4.0-kms
+            - name: RANGER_KMS_CONF_DIR
+              value: /opt/ranger/ranger-2.4.0-kms/ews/webapp/WEB-INF/classes/conf
+            - name: RANGER_ADMIN_SERVICE
+              value: ${{ inputs.ranger_admin_service }}
+            - name: RANGER_KMS_SERVICE
+              value: ${{ defaults.app_name }}
+            - name: RANGER_KMS_NAMESPACE
+              value: ${{ SEALOS_NAMESPACE }}
+            - name: RANGER_KMS_BIND_HOST
+              value: 0.0.0.0
+            ${{ if(inputs.use_external_mysql === 'true') }}
+            - name: RANGER_KMS_DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: url
+            ${{ else() }}
+            - name: RANGER_KMS_DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: host
+            - name: RANGER_KMS_DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: port
+            - name: RANGER_KMS_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: username
+            - name: RANGER_KMS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-mysql-conn-credential
+                  key: password
+            - name: RANGER_KMS_DB_NAME
+              value: rangerkms
+            ${{ endif() }}
+            - name: RANGER_KMS_MASTER_KEY_PASS
+              value: ${{ inputs.master_key_password }}
+            - name: RANGER_KMS_OPTS
+              value: -Xms256m -Xmx768m
+          ports:
+            - name: http
+              containerPort: 9292
+              protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: 9292
+            initialDelaySeconds: 180
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 120
+          readinessProbe:
+            tcpSocket:
+              port: 9292
+            initialDelaySeconds: 90
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            tcpSocket:
+              port: 9292
+            initialDelaySeconds: 240
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+          volumeMounts:
+            - name: vn-mountedvn-conf
+              mountPath: /mounted-conf
+            - name: vn-data
+              mountPath: /data
+            - name: vn-logs
+              mountPath: /logs
+      volumes:
+        - name: vn-mountedvn-conf
+          configMap:
+            name: ${{ defaults.app_name }}-config
+  volumeClaimTemplates:
+    - metadata:
+        name: vn-data
+        annotations:
+          path: /data
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: vn-logs
+        annotations:
+          path: /logs
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    app: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 9292
+      targetPort: 9292
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${{ defaults.app_name }}-register
+  labels:
+    app: ${{ defaults.app_name }}-register
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-register
+spec:
+  completions: 1
+  template:
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: ranger-kms-register
+          image: sealos.hub:5000/u-002/ranger-kms:2.4.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RANGER_ADMIN_SERVICE
+              value: ${{ inputs.ranger_admin_service }}
+            - name: RANGER_ADMIN_NAMESPACE
+              value: ${{ SEALOS_NAMESPACE }}
+            - name: RANGER_ADMIN_PASSWORD
+              value: ${{ inputs.ranger_admin_password }}
+            - name: RANGER_KMS_SERVICE
+              value: ${{ defaults.app_name }}
+            - name: RANGER_KMS_NAMESPACE
+              value: ${{ SEALOS_NAMESPACE }}
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              python3 - <<'PY'
+              import base64
+              import json
+              import os
+              import sys
+              import time
+              import urllib.error
+              import urllib.request
+
+              admin_url = "http://{svc}.{ns}.svc.cluster.local:6080".format(
+                  svc=os.environ["RANGER_ADMIN_SERVICE"],
+                  ns=os.environ["RANGER_ADMIN_NAMESPACE"],
+              )
+              kms_service = os.environ["RANGER_KMS_SERVICE"]
+              kms_namespace = os.environ["RANGER_KMS_NAMESPACE"]
+              kms_url = "http://{svc}.{ns}.svc.cluster.local:9292/kms/v1/".format(
+                  svc=kms_service,
+                  ns=kms_namespace,
+              )
+              provider_url = "kms://http@{svc}.{ns}.svc.cluster.local:9292/kms".format(
+                  svc=kms_service,
+                  ns=kms_namespace,
+              )
+              ranger_admin_password = os.environ["RANGER_ADMIN_PASSWORD"]
+
+              def auth_header(username):
+                  return "Basic " + base64.b64encode(
+                      (username + ":" + ranger_admin_password).encode("utf-8")
+                  ).decode("ascii")
+
+              def http_request(url, method="GET", payload=None, auth_user=None, timeout=10):
+                  data = None
+                  headers = {}
+                  if payload is not None:
+                      data = json.dumps(payload).encode("utf-8")
+                      headers["Content-Type"] = "application/json"
+                  if auth_user:
+                      headers["Authorization"] = auth_header(auth_user)
+                  req = urllib.request.Request(url, data=data, headers=headers, method=method)
+                  try:
+                      with urllib.request.urlopen(req, timeout=timeout) as resp:
+                          return resp.status, resp.read().decode("utf-8", "replace")
+                  except urllib.error.HTTPError as exc:
+                      return exc.code, exc.read().decode("utf-8", "replace")
+                  except Exception as exc:
+                      return 0, str(exc)
+
+              for _ in range(120):
+                  status, body = http_request(
+                      admin_url + "/service/public/v2/api/servicedef/name/kms",
+                      auth_user="keyadmin",
+                      timeout=5,
+                  )
+                  if status == 200:
+                      try:
+                          if json.loads(body).get("name") == "kms":
+                              break
+                      except Exception:
+                          pass
+                  print("waiting for Ranger Admin KMS service definition: status={}".format(status), flush=True)
+                  time.sleep(10)
+              else:
+                  print("Ranger Admin KMS service definition is not available", file=sys.stderr)
+                  sys.exit(1)
+
+              def ensure_ranger_user(username):
+                  user_url = admin_url + "/service/xusers/users/userName/" + username
+                  status, _ = http_request(user_url, auth_user="admin", timeout=10)
+                  if status == 200:
+                      print("Ranger user {} already exists".format(username), flush=True)
+                      return
+                  payload = {
+                      "name": username,
+                      "firstName": username,
+                      "lastName": "",
+                      "password": ranger_admin_password,
+                      "description": "Default service user required by Ranger KMS policies",
+                      "status": 1,
+                      "isVisible": 1,
+                      "userRoleList": ["ROLE_USER"],
+                  }
+                  status, body = http_request(
+                      admin_url + "/service/xusers/users",
+                      method="POST",
+                      payload=payload,
+                      auth_user="admin",
+                      timeout=30,
+                  )
+                  if status in (200, 201):
+                      print("Created Ranger user {}".format(username), flush=True)
+                      return
+                  status_after, _ = http_request(user_url, auth_user="admin", timeout=10)
+                  if status_after == 200:
+                      print("Ranger user {} already exists".format(username), flush=True)
+                      return
+                  print("Failed to create Ranger user {}: {}".format(username, body), file=sys.stderr)
+                  sys.exit(1)
+
+              for service_user in ("hdfs", "om", "hive", "hbase"):
+                  ensure_ranger_user(service_user)
+
+              for _ in range(120):
+                  status, _ = http_request(kms_url, timeout=5)
+                  if status in (200, 401, 403):
+                      break
+                  print("waiting for Ranger KMS endpoint: status={}".format(status), flush=True)
+                  time.sleep(10)
+              else:
+                  print("Ranger KMS endpoint is not available", file=sys.stderr)
+                  sys.exit(1)
+
+              service_url = admin_url + "/service/public/v2/api/service/name/" + kms_service
+              status, body = http_request(service_url, auth_user="keyadmin", timeout=10)
+              if status == 200:
+                  try:
+                      if json.loads(body).get("name") == kms_service:
+                          print("Ranger KMS service {} already exists".format(kms_service))
+                          sys.exit(0)
+                  except Exception:
+                      pass
+
+              payload = {
+                  "name": kms_service,
+                  "type": "kms",
+                  "description": "Apache Ranger KMS service " + kms_service,
+                  "isEnabled": True,
+                  "configs": {
+                      "provider": provider_url,
+                      "username": "keyadmin",
+                      "password": ranger_admin_password,
+                  },
+              }
+              status, body = http_request(
+                  admin_url + "/service/public/v2/api/service",
+                  method="POST",
+                  payload=payload,
+                  auth_user="keyadmin",
+                  timeout=30,
+              )
+              if status not in (200, 201):
+                  print(body, file=sys.stderr)
+                  sys.exit(1)
+              print("Registered Ranger KMS service {} with provider {}".format(kms_service, provider_url))
+              PY
+      restartPolicy: Never
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 300
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager-domain: ${{ defaults.app_host }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/server-snippet: |
+      client_header_buffer_size 64k;
+      large_client_header_buffers 4 128k;
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/client-body-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '300'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '300'
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      if ($request_uri ~* \.(js|css|gif|jpe?g|png)) {
+        expires 30d;
+        add_header Cache-Control "public";
+      }
+spec:
+  rules:
+    - host: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: ${{ defaults.app_name }}
+                port:
+                  number: 9292
+  tls:
+    - hosts:
+        - ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      secretName: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}-cert
+
+---
+apiVersion: app.sealos.io/v1
+kind: App
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  data:
+    url: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+  displayType: normal
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/ranger-kms/logo.svg'
+  name: Apache Ranger KMS
+  type: link

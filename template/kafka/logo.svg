@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Apache Kafka">
+  <rect width="128" height="128" rx="24" fill="#111827"/>
+  <g fill="none" stroke="#f9fafb" stroke-width="10" stroke-linecap="round">
+    <path d="M64 36v56"/>
+    <path d="M64 64l30-18"/>
+    <path d="M64 64l30 18"/>
+    <path d="M64 64L34 46"/>
+    <path d="M64 64L34 82"/>
+  </g>
+  <g fill="#111827" stroke="#f9fafb" stroke-width="8">
+    <circle cx="64" cy="64" r="13"/>
+    <circle cx="64" cy="34" r="12"/>
+    <circle cx="64" cy="94" r="12"/>
+    <circle cx="98" cy="44" r="12"/>
+    <circle cx="98" cy="84" r="12"/>
+    <circle cx="30" cy="44" r="12"/>
+    <circle cx="30" cy="84" r="12"/>
+  </g>
+  <circle cx="64" cy="64" r="5" fill="#f97316"/>
+</svg>

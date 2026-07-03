@@ -1,0 +1,617 @@
+apiVersion: app.sealos.io/v1
+kind: Template
+metadata:
+  name: hbase
+spec:
+  title: 'Apache HBase'
+  url: 'https://hbase.apache.org/'
+  gitRepo: 'https://github.com/apache/hbase'
+  author: 'Sealos'
+  description: 'Apache HBase is a distributed, scalable, big data store built on Apache Hadoop and HDFS.'
+  readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/hbase/README.md'
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/hbase/logo.svg'
+  templateType: inline
+  locale: en
+  i18n:
+    zh:
+      description: 'Apache HBase 是构建在 Apache Hadoop 和 HDFS 之上的分布式、可扩展大数据存储系统。'
+      readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/hbase/README_zh.md'
+  categories:
+    - database
+    - storage
+  defaults:
+    app_name:
+      type: string
+      value: hbase-${{ random(8) }}
+    app_host:
+      type: string
+      value: hbase-${{ random(8) }}
+  inputs:
+    hdfs_namenode_service:
+      description: 'HDFS NameNode Service name deployed in the same namespace.'
+      type: string
+      default: 'hadoop-namenode'
+      required: true
+    zookeeper_service:
+      description: 'ZooKeeper Service name deployed in the same namespace.'
+      type: string
+      default: 'zookeeper'
+      required: true
+    regionserver_replicas:
+      description: 'Number of HBase RegionServer replicas.'
+      type: number
+      default: '1'
+      required: true
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${{ defaults.app_name }}-config
+  labels:
+    app: ${{ defaults.app_name }}-config
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-config
+data:
+  core-site.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+      <property>
+        <name>fs.defaultFS</name>
+        <value>hdfs://${HDFS_NAMENODE_SERVICE}.${HBASE_NAMESPACE}.svc.cluster.local:8020</value>
+      </property>
+    </configuration>
+  hbase-site.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+      <property>
+        <name>hbase.cluster.distributed</name>
+        <value>true</value>
+      </property>
+      <property>
+        <name>hbase.rootdir</name>
+        <value>hdfs://${HDFS_NAMENODE_SERVICE}.${HBASE_NAMESPACE}.svc.cluster.local:8020/hbase</value>
+      </property>
+      <property>
+        <name>hbase.zookeeper.quorum</name>
+        <value>${ZOOKEEPER_SERVICE}.${HBASE_NAMESPACE}.svc.cluster.local</value>
+      </property>
+      <property>
+        <name>hbase.zookeeper.property.clientPort</name>
+        <value>2181</value>
+      </property>
+      <property>
+        <name>hbase.master.hostname</name>
+        <value>${HBASE_MASTER_HOST}</value>
+      </property>
+      <property>
+        <name>hbase.master.ipc.address</name>
+        <value>0.0.0.0</value>
+      </property>
+      <property>
+        <name>hbase.master.info.bindAddress</name>
+        <value>0.0.0.0</value>
+      </property>
+      <property>
+        <name>hbase.master.info.port</name>
+        <value>16010</value>
+      </property>
+      <property>
+        <name>hbase.regionserver.hostname</name>
+        <value>${HBASE_REGIONSERVER_HOST}</value>
+      </property>
+      <property>
+        <name>hbase.regionserver.ipc.address</name>
+        <value>0.0.0.0</value>
+      </property>
+      <property>
+        <name>hbase.regionserver.info.bindAddress</name>
+        <value>0.0.0.0</value>
+      </property>
+      <property>
+        <name>hbase.regionserver.info.port</name>
+        <value>16030</value>
+      </property>
+    </configuration>
+  regionservers: |
+    localhost
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${{ defaults.app_name }}-master
+  annotations:
+    originImageName: sealos.hub:5000/u-002/hbase:2.4.17
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    app: ${{ defaults.app_name }}-master
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-master
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  minReadySeconds: 10
+  serviceName: ${{ defaults.app_name }}-master
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-master
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-master
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: init-permissions
+          image: sealos.hub:5000/u-002/hbase:2.4.17
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - mkdir -p /data /logs && chown -R 1000:1000 /data /logs && chmod -R ug+rwX /data /logs
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: vn-data
+              mountPath: /data
+            - name: vn-logs
+              mountPath: /logs
+      containers:
+        - name: ${{ defaults.app_name }}-master
+          image: sealos.hub:5000/u-002/hbase:2.4.17
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              : "${HBASE_HOME:=/opt/hbase}"
+              : "${HADOOP_HOME:=/opt/hadoop}"
+              if [ ! -x "${HBASE_HOME}/bin/hbase" ]; then
+                for candidate in /opt/hbase /opt/hbase-* /opt/apache-hbase-*; do
+                  if [ -x "${candidate}/bin/hbase" ]; then
+                    HBASE_HOME="${candidate}"
+                    break
+                  fi
+                done
+              fi
+              if [ ! -x "${HBASE_HOME}/bin/hbase" ]; then
+                echo "Unable to find HBase binary under ${HBASE_HOME}" >&2
+                exit 1
+              fi
+              export HBASE_HOME
+              : "${HBASE_CONF_DIR:=${HBASE_HOME}/conf}"
+              export HBASE_CONF_DIR
+              export PATH="${HBASE_HOME}/bin:${HADOOP_HOME}/bin:${PATH}"
+              : "${SERVICE_NAME:=${HBASE_MASTER_SERVICE}}"
+              : "${POD_NAMESPACE:=${HBASE_NAMESPACE}}"
+              : "${HBASE_MASTER_HOST:=${HOSTNAME}.${SERVICE_NAME}.${POD_NAMESPACE}.svc.cluster.local}"
+              : "${HBASE_REGIONSERVER_HOST:=${HOSTNAME}.${SERVICE_NAME}.${POD_NAMESPACE}.svc.cluster.local}"
+              export SERVICE_NAME POD_NAMESPACE
+              if [ -z "${JAVA_HOME:-}" ] || [ ! -x "${JAVA_HOME}/bin/java" ]; then
+                JAVA_BIN="$(command -v java)"
+                JAVA_REAL="$(readlink -f "${JAVA_BIN}" 2>/dev/null || realpath "${JAVA_BIN}" 2>/dev/null || echo "${JAVA_BIN}")"
+                export JAVA_HOME="$(dirname "$(dirname "${JAVA_REAL}")")"
+              fi
+              mkdir -p "${HBASE_CONF_DIR}" "${HADOOP_CONF_DIR}" /data /logs
+              cp /mounted-conf/core-site.xml "${HADOOP_CONF_DIR}/core-site.xml"
+              cp /mounted-conf/core-site.xml "${HBASE_CONF_DIR}/core-site.xml"
+              cp /mounted-conf/hbase-site.xml "${HBASE_CONF_DIR}/hbase-site.xml"
+              cp /mounted-conf/regionservers "${HBASE_CONF_DIR}/regionservers"
+              sed -i "s#\${HDFS_NAMENODE_SERVICE}#${HDFS_NAMENODE_SERVICE}#g" "${HADOOP_CONF_DIR}/core-site.xml" "${HBASE_CONF_DIR}/core-site.xml" "${HBASE_CONF_DIR}/hbase-site.xml"
+              sed -i "s#\${ZOOKEEPER_SERVICE}#${ZOOKEEPER_SERVICE}#g" "${HBASE_CONF_DIR}/hbase-site.xml"
+              sed -i "s#\${HBASE_MASTER_HOST}#${HBASE_MASTER_HOST}#g" "${HBASE_CONF_DIR}/hbase-site.xml"
+              sed -i "s#\${HBASE_REGIONSERVER_HOST}#${HBASE_REGIONSERVER_HOST}#g" "${HBASE_CONF_DIR}/hbase-site.xml"
+              sed -i "s#\${HBASE_MASTER_SERVICE}#${HBASE_MASTER_SERVICE}#g" "${HBASE_CONF_DIR}/hbase-site.xml"
+              sed -i "s#\${HBASE_NAMESPACE}#${HBASE_NAMESPACE}#g" "${HADOOP_CONF_DIR}/core-site.xml" "${HBASE_CONF_DIR}/core-site.xml" "${HBASE_CONF_DIR}/hbase-site.xml"
+              printf '%s\n' "export JAVA_HOME=${JAVA_HOME}" > "${HBASE_CONF_DIR}/hbase-env.sh"
+              printf '%s\n' "export HBASE_LOG_DIR=/logs" >> "${HBASE_CONF_DIR}/hbase-env.sh"
+              printf '%s\n' "export HBASE_MANAGES_ZK=false" >> "${HBASE_CONF_DIR}/hbase-env.sh"
+              until (echo >"/dev/tcp/${HDFS_NAMENODE_SERVICE}.${HBASE_NAMESPACE}.svc.cluster.local/8020") >/dev/null 2>&1; do
+                echo waiting for hdfs namenode
+                sleep 5
+              done
+              until (echo >"/dev/tcp/${ZOOKEEPER_SERVICE}.${HBASE_NAMESPACE}.svc.cluster.local/2181") >/dev/null 2>&1; do
+                echo waiting for zookeeper
+                sleep 5
+              done
+              exec /opt/entrypoint.sh master
+          env:
+            - name: HBASE_HOME
+              value: /opt/hbase
+            - name: HBASE_CONF_DIR
+              value: /opt/hbase/conf
+            - name: HADOOP_HOME
+              value: /opt/hadoop
+            - name: HADOOP_CONF_DIR
+              value: /etc/hadoop
+            - name: HADOOP_USER_NAME
+              value: hadoop
+            - name: HDFS_NAMENODE_SERVICE
+              value: ${{ inputs.hdfs_namenode_service }}
+            - name: ZOOKEEPER_SERVICE
+              value: ${{ inputs.zookeeper_service }}
+            - name: HBASE_MASTER_SERVICE
+              value: ${{ defaults.app_name }}-master
+            - name: SERVICE_NAME
+              value: ${{ defaults.app_name }}-master
+            - name: HBASE_NAMESPACE
+              value: ${{ SEALOS_NAMESPACE }}
+            - name: POD_NAMESPACE
+              value: ${{ SEALOS_NAMESPACE }}
+          ports:
+            - name: master
+              containerPort: 16000
+              protocol: TCP
+            - name: master-ui
+              containerPort: 16010
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /
+              port: 16010
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 16010
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 16010
+            initialDelaySeconds: 180
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+          volumeMounts:
+            - name: vn-mountedvn-conf
+              mountPath: /mounted-conf
+            - name: vn-data
+              mountPath: /data
+            - name: vn-logs
+              mountPath: /logs
+      volumes:
+        - name: vn-mountedvn-conf
+          configMap:
+            name: ${{ defaults.app_name }}-config
+  volumeClaimTemplates:
+    - metadata:
+        name: vn-data
+        annotations:
+          path: /data
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: vn-logs
+        annotations:
+          path: /logs
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-master
+  labels:
+    app: ${{ defaults.app_name }}-master
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-master
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: master
+      port: 16000
+      targetPort: 16000
+      protocol: TCP
+    - name: master-ui
+      port: 16010
+      targetPort: 16010
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}-master
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${{ defaults.app_name }}-regionserver
+  annotations:
+    originImageName: sealos.hub:5000/u-002/hbase:2.4.17
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '${{ inputs.regionserver_replicas }}'
+  labels:
+    app: ${{ defaults.app_name }}-regionserver
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-regionserver
+spec:
+  replicas: ${{ inputs.regionserver_replicas }}
+  revisionHistoryLimit: 1
+  minReadySeconds: 10
+  serviceName: ${{ defaults.app_name }}-regionserver
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-regionserver
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-regionserver
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: init-permissions
+          image: sealos.hub:5000/u-002/hbase:2.4.17
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - mkdir -p /data /logs && chown -R 1000:1000 /data /logs && chmod -R ug+rwX /data /logs
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: vn-data
+              mountPath: /data
+            - name: vn-logs
+              mountPath: /logs
+      containers:
+        - name: ${{ defaults.app_name }}-regionserver
+          image: sealos.hub:5000/u-002/hbase:2.4.17
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              : "${HBASE_HOME:=/opt/hbase}"
+              : "${HADOOP_HOME:=/opt/hadoop}"
+              if [ ! -x "${HBASE_HOME}/bin/hbase" ]; then
+                for candidate in /opt/hbase /opt/hbase-* /opt/apache-hbase-*; do
+                  if [ -x "${candidate}/bin/hbase" ]; then
+                    HBASE_HOME="${candidate}"
+                    break
+                  fi
+                done
+              fi
+              if [ ! -x "${HBASE_HOME}/bin/hbase" ]; then
+                echo "Unable to find HBase binary under ${HBASE_HOME}" >&2
+                exit 1
+              fi
+              export HBASE_HOME
+              : "${HBASE_CONF_DIR:=${HBASE_HOME}/conf}"
+              export HBASE_CONF_DIR
+              export PATH="${HBASE_HOME}/bin:${HADOOP_HOME}/bin:${PATH}"
+              : "${SERVICE_NAME:=${HBASE_REGIONSERVER_SERVICE}}"
+              : "${POD_NAMESPACE:=${HBASE_NAMESPACE}}"
+              : "${HBASE_MASTER_HOST:=${HBASE_MASTER_SERVICE}-0.${HBASE_MASTER_SERVICE}.${POD_NAMESPACE}.svc.cluster.local}"
+              : "${HBASE_REGIONSERVER_HOST:=${HOSTNAME}.${SERVICE_NAME}.${POD_NAMESPACE}.svc.cluster.local}"
+              export SERVICE_NAME POD_NAMESPACE
+              if [ -z "${JAVA_HOME:-}" ] || [ ! -x "${JAVA_HOME}/bin/java" ]; then
+                JAVA_BIN="$(command -v java)"
+                JAVA_REAL="$(readlink -f "${JAVA_BIN}" 2>/dev/null || realpath "${JAVA_BIN}" 2>/dev/null || echo "${JAVA_BIN}")"
+                export JAVA_HOME="$(dirname "$(dirname "${JAVA_REAL}")")"
+              fi
+              mkdir -p "${HBASE_CONF_DIR}" "${HADOOP_CONF_DIR}" /data /logs
+              cp /mounted-conf/core-site.xml "${HADOOP_CONF_DIR}/core-site.xml"
+              cp /mounted-conf/core-site.xml "${HBASE_CONF_DIR}/core-site.xml"
+              cp /mounted-conf/hbase-site.xml "${HBASE_CONF_DIR}/hbase-site.xml"
+              cp /mounted-conf/regionservers "${HBASE_CONF_DIR}/regionservers"
+              sed -i "s#\${HDFS_NAMENODE_SERVICE}#${HDFS_NAMENODE_SERVICE}#g" "${HADOOP_CONF_DIR}/core-site.xml" "${HBASE_CONF_DIR}/core-site.xml" "${HBASE_CONF_DIR}/hbase-site.xml"
+              sed -i "s#\${ZOOKEEPER_SERVICE}#${ZOOKEEPER_SERVICE}#g" "${HBASE_CONF_DIR}/hbase-site.xml"
+              sed -i "s#\${HBASE_MASTER_HOST}#${HBASE_MASTER_HOST}#g" "${HBASE_CONF_DIR}/hbase-site.xml"
+              sed -i "s#\${HBASE_REGIONSERVER_HOST}#${HBASE_REGIONSERVER_HOST}#g" "${HBASE_CONF_DIR}/hbase-site.xml"
+              sed -i "s#\${HBASE_MASTER_SERVICE}#${HBASE_MASTER_SERVICE}#g" "${HBASE_CONF_DIR}/hbase-site.xml"
+              sed -i "s#\${HBASE_NAMESPACE}#${HBASE_NAMESPACE}#g" "${HADOOP_CONF_DIR}/core-site.xml" "${HBASE_CONF_DIR}/core-site.xml" "${HBASE_CONF_DIR}/hbase-site.xml"
+              printf '%s\n' "export JAVA_HOME=${JAVA_HOME}" > "${HBASE_CONF_DIR}/hbase-env.sh"
+              printf '%s\n' "export HBASE_LOG_DIR=/logs" >> "${HBASE_CONF_DIR}/hbase-env.sh"
+              printf '%s\n' "export HBASE_MANAGES_ZK=false" >> "${HBASE_CONF_DIR}/hbase-env.sh"
+              until (echo >"/dev/tcp/${HBASE_MASTER_HOST}/16000") >/dev/null 2>&1; do
+                echo waiting for hbase master
+                sleep 5
+              done
+              exec /opt/entrypoint.sh regionserver
+          env:
+            - name: HBASE_HOME
+              value: /opt/hbase
+            - name: HBASE_CONF_DIR
+              value: /opt/hbase/conf
+            - name: HADOOP_HOME
+              value: /opt/hadoop
+            - name: HADOOP_CONF_DIR
+              value: /etc/hadoop
+            - name: HADOOP_USER_NAME
+              value: hadoop
+            - name: HDFS_NAMENODE_SERVICE
+              value: ${{ inputs.hdfs_namenode_service }}
+            - name: ZOOKEEPER_SERVICE
+              value: ${{ inputs.zookeeper_service }}
+            - name: HBASE_MASTER_SERVICE
+              value: ${{ defaults.app_name }}-master
+            - name: HBASE_REGIONSERVER_SERVICE
+              value: ${{ defaults.app_name }}-regionserver
+            - name: SERVICE_NAME
+              value: ${{ defaults.app_name }}-regionserver
+            - name: HBASE_NAMESPACE
+              value: ${{ SEALOS_NAMESPACE }}
+            - name: POD_NAMESPACE
+              value: ${{ SEALOS_NAMESPACE }}
+          ports:
+            - name: regionserver
+              containerPort: 16020
+              protocol: TCP
+            - name: regionserver-ui
+              containerPort: 16030
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /
+              port: 16030
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 16030
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 16030
+            initialDelaySeconds: 180
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+          volumeMounts:
+            - name: vn-mountedvn-conf
+              mountPath: /mounted-conf
+            - name: vn-data
+              mountPath: /data
+            - name: vn-logs
+              mountPath: /logs
+      volumes:
+        - name: vn-mountedvn-conf
+          configMap:
+            name: ${{ defaults.app_name }}-config
+  volumeClaimTemplates:
+    - metadata:
+        name: vn-data
+        annotations:
+          path: /data
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: vn-logs
+        annotations:
+          path: /logs
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-regionserver
+  labels:
+    app: ${{ defaults.app_name }}-regionserver
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-regionserver
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: regionserver
+      port: 16020
+      targetPort: 16020
+      protocol: TCP
+    - name: regionserver-ui
+      port: 16030
+      targetPort: 16030
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}-regionserver
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${{ defaults.app_name }}-master
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-master
+    cloud.sealos.io/app-deploy-manager-domain: ${{ defaults.app_host }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/server-snippet: |
+      client_header_buffer_size 64k;
+      large_client_header_buffers 4 128k;
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/client-body-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '300'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '300'
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      if ($request_uri ~* \.(js|css|gif|jpe?g|png)) {
+        expires 30d;
+        add_header Cache-Control "public";
+      }
+spec:
+  rules:
+    - host: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: ${{ defaults.app_name }}-master
+                port:
+                  number: 16010
+  tls:
+    - hosts:
+        - ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      secretName: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}-cert
+
+---
+apiVersion: app.sealos.io/v1
+kind: App
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  data:
+    url: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+  displayType: normal
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/hbase/logo.svg'
+  name: Apache HBase
+  type: link

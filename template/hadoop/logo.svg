@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Apache Hadoop">
+  <rect width="128" height="128" rx="24" fill="#f7c948"/>
+  <circle cx="43" cy="44" r="12" fill="#2d3748"/>
+  <circle cx="85" cy="44" r="12" fill="#2d3748"/>
+  <circle cx="43" cy="44" r="4" fill="#f7c948"/>
+  <circle cx="85" cy="44" r="4" fill="#f7c948"/>
+  <path d="M33 78c18 16 44 16 62 0" fill="none" stroke="#2d3748" stroke-width="8" stroke-linecap="round"/>
+  <path d="M28 30c-8-12-13-16-18-14 2 10 8 18 16 22" fill="#2d3748"/>
+  <path d="M100 30c8-12 13-16 18-14-2 10-8 18-16 22" fill="#2d3748"/>
+  <text x="64" y="112" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700" fill="#2d3748">HDFS</text>
+</svg>

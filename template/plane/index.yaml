@@ -3,24 +3,39 @@ kind: Template
 metadata:
   name: plane
 spec:
-  title: 'Plane'
-  url: 'http://plane.so/'
-  gitRepo: 'https://github.com/makeplane/plane'
-  author: 'Sealos'
-  description: 'Open Source JIRA, Linear, Monday, and Asana Alternative. Plane helps you track your issues, epics, and product roadmaps in the simplest way possible.'
-  readme: 'https://raw.githubusercontent.com/makeplane/plane/preview/README.md'
-  icon: 'https://avatars.githubusercontent.com/u/115727700?s=48&v=4'
+  title: "Plane"
+  url: "https://plane.so/"
+  gitRepo: "https://github.com/makeplane/plane"
+  author: "Sealos"
+  description: "An open source project management platform for issues, cycles, modules, roadmaps, and product planning."
+  readme: "https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/plane/README.md"
+  icon: "https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/plane/logo.png"
   templateType: inline
+  locale: en
+  i18n:
+    zh:
+      description: "Plane 是一个开源项目管理平台，支持问题跟踪、周期、模块、路线图和产品规划。"
+      readme: "https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/plane/README_zh.md"
   categories:
+    - dev-ops
     - tool
   defaults:
-    app_host:
-      # number or string..
-      type: string
-      value: plane-${{ random(8) }}
     app_name:
       type: string
       value: plane-${{ random(8) }}
+    app_host:
+      type: string
+      value: plane-${{ random(8) }}
+    secret_key:
+      type: string
+      value: ${{ random(50) }}
+    live_server_secret_key:
+      type: string
+      value: ${{ random(32) }}
+    rabbitmq_password:
+      type: string
+      value: ${{ random(32) }}
+  inputs:
 
 ---
 apiVersion: objectstorage.sealos.io/v1
@@ -34,44 +49,75 @@ spec:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
+  name: ${{ defaults.app_name }}-pg
   labels:
     sealos-db-provider-cr: ${{ defaults.app_name }}-pg
     app.kubernetes.io/instance: ${{ defaults.app_name }}-pg
     app.kubernetes.io/managed-by: kbcli
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
   name: ${{ defaults.app_name }}-pg
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-pg
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-pg
+    app.kubernetes.io/managed-by: kbcli
+rules:
+  - apiGroups:
+      - "*"
+    resources:
+      - "*"
+    verbs:
+      - "*"
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ${{ defaults.app_name }}-pg
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-pg
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-pg
+    app.kubernetes.io/managed-by: kbcli
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ${{ defaults.app_name }}-pg
+subjects:
+  - kind: ServiceAccount
+    name: ${{ defaults.app_name }}-pg
 
 ---
 apiVersion: apps.kubeblocks.io/v1alpha1
 kind: Cluster
 metadata:
-  finalizers:
-    - cluster.kubeblocks.io/finalizer
+  name: ${{ defaults.app_name }}-pg
   labels:
+    kb.io/database: postgresql-14.8.0
     clusterdefinition.kubeblocks.io/name: postgresql
     clusterversion.kubeblocks.io/name: postgresql-14.8.0
-    sealos-db-provider-cr: ${{ defaults.app_name }}-pg
-  annotations: {}
-  name: ${{ defaults.app_name }}-pg
 spec:
   affinity:
-    nodeLabels: {}
     podAntiAffinity: Preferred
     tenancy: SharedNode
-    topologyKeys: []
   clusterDefinitionRef: postgresql
   clusterVersionRef: postgresql-14.8.0
   componentSpecs:
     - componentDefRef: postgresql
-      monitor: true
+      disableExporter: true
+      enabledLogs:
+        - running
       name: postgresql
       replicas: 1
       resources:
         limits:
-          cpu: 500m
-          memory: 512Mi
+          cpu: 200m
+          memory: 256Mi
         requests:
-          cpu: 50m
-          memory: 51Mi
+          cpu: 20m
+          memory: 25Mi
       serviceAccountName: ${{ defaults.app_name }}-pg
       switchPolicy:
         type: Noop
@@ -83,44 +129,8 @@ spec:
             resources:
               requests:
                 storage: 1Gi
-
+            storageClassName: openebs-backup
   terminationPolicy: Delete
-  tolerations: []
-
----
-
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  labels:
-    sealos-db-provider-cr: ${{ defaults.app_name }}-pg
-    app.kubernetes.io/instance: ${{ defaults.app_name }}-pg
-    app.kubernetes.io/managed-by: kbcli
-  name: ${{ defaults.app_name }}-pg
-rules:
-  - apiGroups:
-      - '*'
-    resources:
-      - '*'
-    verbs:
-      - '*'
-
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  labels:
-    sealos-db-provider-cr: ${{ defaults.app_name }}-pg
-    app.kubernetes.io/instance: ${{ defaults.app_name }}-pg
-    app.kubernetes.io/managed-by: kbcli
-  name: ${{ defaults.app_name }}-pg
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: ${{ defaults.app_name }}-pg
-subjects:
-  - kind: ServiceAccount
-    name: ${{ defaults.app_name }}-pg
 
 ---
 apiVersion: batch/v1
@@ -128,175 +138,172 @@ kind: Job
 metadata:
   name: ${{ defaults.app_name }}-pg-init
 spec:
-  completions: 1
+  backoffLimit: 3
   template:
     spec:
+      automountServiceAccountToken: false
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:14-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              PG_SERVICE="${{ defaults.app_name }}-pg-postgresql.${{ SEALOS_NAMESPACE }}.svc"
+              for i in $(seq 1 180); do
+                if [ -s /var/run/sealos-postgres/password ] && pg_isready -h "${PG_SERVICE}" -p 5432 >/dev/null 2>&1; then
+                  exit 0
+                fi
+                sleep 2
+              done
+              test -s /var/run/sealos-postgres/password
+              pg_isready -h "${PG_SERVICE}" -p 5432
+          volumeMounts:
+            - name: pg-conn-credential
+              mountPath: /var/run/sealos-postgres
+              readOnly: true
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 20m
+              memory: 25Mi
+      volumes:
+        - name: pg-conn-credential
+          secret:
+            secretName: ${{ defaults.app_name }}-pg-conn-credential
+            optional: true
       containers:
         - name: pgsql-init
-          image: senzing/postgresql-client:2.2.4
+          image: postgres:14-alpine
+          imagePullPolicy: IfNotPresent
           env:
+            - name: PG_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: username
             - name: PG_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: ${{ defaults.app_name }}-pg-conn-credential
                   key: password
-            - name: DATABASE_URL
-              value: postgresql://postgres:$(PG_PASSWORD)@${{ defaults.app_name }}-pg-postgresql.${{ SEALOS_NAMESPACE }}.svc:5432
+            - name: PG_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: endpoint
+            - name: PG_DATABASE
+              value: plane
           command:
             - /bin/sh
             - -c
             - |
-              until psql ${DATABASE_URL} -c 'CREATE DATABASE plane;' &>/dev/null; do sleep 1; done
-      restartPolicy: Never
-  backoffLimit: 0
-  ttlSecondsAfterFinished: 300
-
----
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: ${{ defaults.app_name }}-api-migrate
-spec:
-  completions: 1
-  template:
-    spec:
-      containers:
-        - name: ${{ defaults.app_name }}-api-migrate
-          image: makeplane/plane-backend:v0.22-dev
-          env:
-            - name: DEBUG
-              value: "0"
-            - name: DOCKERIZED
-              value: "1"
-            - name: GUNICORN_WORKERS
-              value: "1"
-            - name: WEB_URL
-              value: "https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}"
-            - name: CORS_ALLOWED_ORIGINS
-              value: "http://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }},https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}"
-            - name: REDIS_PORT
-              valueFrom:
-                secretKeyRef:
-                  name: ${{ defaults.app_name }}-redis-conn-credential
-                  key: port
-            - name: REDIS_USER
-              valueFrom:
-                secretKeyRef:
-                  name: ${{ defaults.app_name }}-redis-conn-credential
-                  key: username
-            - name: REDIS_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: ${{ defaults.app_name }}-redis-conn-credential
-                  key: password
-            - name: REDIS_URL
-              value: "redis://$(REDIS_USER):$(REDIS_PASSWORD)@${{ defaults.app_name }}-redis-redis.${{ SEALOS_NAMESPACE }}.svc:$(REDIS_PORT)"
-            - name: DATABASE_PORT
-              valueFrom:
-                secretKeyRef:
-                  name: ${{ defaults.app_name }}-pg-conn-credential
-                  key: port
-            - name: DATABASE_USER
-              valueFrom:
-                secretKeyRef:
-                  name: ${{ defaults.app_name }}-pg-conn-credential
-                  key: username
-            - name: DATABASE_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: ${{ defaults.app_name }}-pg-conn-credential
-                  key: password
-            - name: DATABASE_URL
-              value: "postgresql://$(DATABASE_USER):$(DATABASE_PASSWORD)@${{ defaults.app_name }}-pg-postgresql.${{ SEALOS_NAMESPACE }}.svc:$(DATABASE_PORT)/plane"
-            - name: SECRET_KEY
-              value: "NjBncDBieWZ6MmR2ZmZhNDVjeGwyMHAxc2N5OXhicGY2ZDhjNXkwZ2VlamdreXAxYjU="
-            - name: FILE_SIZE_LIMIT
-              value: "5242880"
-            - name: AWS_S3_BUCKET_NAME
-              value: "upload"
-            - name: AWS_SECRET_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: object-storage-key
-                  key: secretKey
-            - name: AWS_ACCESS_KEY_ID
-              valueFrom:
-                secretKeyRef:
-                  name: object-storage-key
-                  key: accessKey
-            - name: BACKEND_STORAGE_PRIVATE_BUCKET
-              valueFrom:
-                secretKeyRef:
-                  name: object-storage-key-${{ SEALOS_SERVICE_ACCOUNT }}-${{ defaults.app_name }}-private
-                  key: bucket
-            - name: BACKEND_STORAGE_MINIO_ENDPOINT
-              valueFrom:
-                secretKeyRef:
-                  name: object-storage-key
-                  key: internal
-            - name: AWS_S3_ENDPOINT_URL
-              value: "http://$(BACKEND_STORAGE_MINIO_ENDPOINT)/$(BACKEND_STORAGE_PRIVATE_BUCKET)"
-            - name: USE_MINIO
-              value: "0"
-          command:
-            - /bin/sh
-            - -c
-            - |
-              until ./bin/docker-entrypoint-migrator.sh &>/dev/null; do sleep 1; done
+              set -eu
+              for i in $(seq 1 60); do
+                if pg_isready -h "${PG_ENDPOINT%:*}" -p "${PG_ENDPOINT##*:}" -U "${PG_USERNAME}" -d postgres >/dev/null 2>&1; then
+                  break
+                fi
+                sleep 2
+              done
+              pg_isready -h "${PG_ENDPOINT%:*}" -p "${PG_ENDPOINT##*:}" -U "${PG_USERNAME}" -d postgres >/dev/null 2>&1
+              if ! psql "postgresql://${PG_USERNAME}:${PG_PASSWORD}@${PG_ENDPOINT}/postgres" -tAc "SELECT 1 FROM pg_database WHERE datname='plane'" | grep -q 1; then
+                psql "postgresql://${PG_USERNAME}:${PG_PASSWORD}@${PG_ENDPOINT}/postgres" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"plane\";"
+              fi
           resources:
-            requests:
-              cpu: 100m
-              memory: 51Mi
             limits:
-              cpu: 1000m
-              memory: 512Mi
-      restartPolicy: Never
-  backoffLimit: 0
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 20m
+              memory: 25Mi
+      restartPolicy: OnFailure
   ttlSecondsAfterFinished: 300
 
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
+  name: ${{ defaults.app_name }}-redis
   labels:
     sealos-db-provider-cr: ${{ defaults.app_name }}-redis
     app.kubernetes.io/instance: ${{ defaults.app_name }}-redis
     app.kubernetes.io/managed-by: kbcli
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
   name: ${{ defaults.app_name }}-redis
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-redis
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-redis
+    app.kubernetes.io/managed-by: kbcli
+rules:
+  - apiGroups:
+      - "*"
+    resources:
+      - "*"
+    verbs:
+      - "*"
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ${{ defaults.app_name }}-redis
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-redis
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-redis
+    app.kubernetes.io/managed-by: kbcli
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ${{ defaults.app_name }}-redis
+subjects:
+  - kind: ServiceAccount
+    name: ${{ defaults.app_name }}-redis
 
 ---
 apiVersion: apps.kubeblocks.io/v1alpha1
 kind: Cluster
 metadata:
-  finalizers:
-    - cluster.kubeblocks.io/finalizer
-  labels:
-    clusterdefinition.kubeblocks.io/name: redis
-    clusterversion.kubeblocks.io/name: redis-7.0.6
-    sealos-db-provider-cr: ${{ defaults.app_name }}-redis
-  annotations: {}
   name: ${{ defaults.app_name }}-redis
+  labels:
+    kb.io/database: redis-7.0.6
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-redis
+    app.kubernetes.io/version: 7.0.6
+    clusterversion.kubeblocks.io/name: redis-7.0.6
+    clusterdefinition.kubeblocks.io/name: redis
 spec:
   affinity:
-    nodeLabels: {}
     podAntiAffinity: Preferred
     tenancy: SharedNode
-    topologyKeys: []
+    topologyKeys:
+      - kubernetes.io/hostname
   clusterDefinitionRef: redis
   clusterVersionRef: redis-7.0.6
   componentSpecs:
     - componentDefRef: redis
-      monitor: true
       name: redis
       replicas: 1
+      enabledLogs:
+        - running
+      env:
+        - name: CUSTOM_SENTINEL_MASTER_NAME
+          value: ""
       resources:
         limits:
-          cpu: 500m
-          memory: 512Mi
+          cpu: 200m
+          memory: 256Mi
         requests:
-          cpu: 50m
-          memory: 51Mi
+          cpu: 20m
+          memory: 25Mi
       serviceAccountName: ${{ defaults.app_name }}-redis
+      serviceVersion: 7.0.6
       switchPolicy:
         type: Noop
       volumeClaimTemplates:
@@ -307,119 +314,289 @@ spec:
             resources:
               requests:
                 storage: 1Gi
-
+            storageClassName: openebs-backup
     - componentDefRef: redis-sentinel
-      monitor: true
       name: redis-sentinel
       replicas: 1
       resources:
         limits:
-          cpu: 100m
-          memory: 100Mi
+          cpu: 200m
+          memory: 256Mi
         requests:
-          cpu: 100m
-          memory: 100Mi
+          cpu: 20m
+          memory: 25Mi
       serviceAccountName: ${{ defaults.app_name }}-redis
+      serviceVersion: 7.0.6
+      volumeClaimTemplates:
+        - name: data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 1Gi
   terminationPolicy: Delete
-  tolerations: []
+  topology: replication
 
 ---
-
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+apiVersion: v1
+kind: ConfigMap
 metadata:
+  name: ${{ defaults.app_name }}-app-vars
   labels:
-    sealos-db-provider-cr: ${{ defaults.app_name }}-redis
-    app.kubernetes.io/instance: ${{ defaults.app_name }}-redis
-    app.kubernetes.io/managed-by: kbcli
-  name: ${{ defaults.app_name }}-redis
-rules:
-  - apiGroups:
-      - '*'
-    resources:
-      - '*'
-    verbs:
-      - '*'
+    app: ${{ defaults.app_name }}-app-vars
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-app-vars
+data:
+  API_KEY_RATE_LIMIT: "60/minute"
+  AWS_REGION: "us-east-1"
+  CORS_ALLOWED_ORIGINS: "http://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }},https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}"
+  DEBUG: "0"
+  DOCKERIZED: "1"
+  FILE_SIZE_LIMIT: "5242880"
+  GUNICORN_WORKERS: "1"
+  MINIO_ENDPOINT_SSL: "0"
+  SENTRY_DSN: ""
+  SENTRY_ENVIRONMENT: ""
+  SIGNED_URL_EXPIRATION: "3600"
+  USE_MINIO: "0"
+  WEB_URL: "https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}"
 
 ---
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+apiVersion: v1
+kind: ConfigMap
 metadata:
+  name: ${{ defaults.app_name }}-live-vars
   labels:
-    sealos-db-provider-cr: ${{ defaults.app_name }}-redis
-    app.kubernetes.io/instance: ${{ defaults.app_name }}-redis
-    app.kubernetes.io/managed-by: kbcli
-  name: ${{ defaults.app_name }}-redis
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: ${{ defaults.app_name }}-redis
-subjects:
-  - kind: ServiceAccount
-    name: ${{ defaults.app_name }}-redis
-    namespace: ${{ SEALOS_NAMESPACE }}
+    app: ${{ defaults.app_name }}-live-vars
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-live-vars
+data:
+  API_BASE_URL: "http://${{ defaults.app_name }}-api.${{ SEALOS_NAMESPACE }}.svc:8000/"
+  LIVE_BASE_PATH: "/live"
 
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
-  name: ${{ defaults.app_name }}-admin
+  name: ${{ defaults.app_name }}-mq
   annotations:
-    originImageName: makeplane/plane-admin:v0.22-dev
-    deploy.cloud.sealos.io/minReplicas: '1'
-    deploy.cloud.sealos.io/maxReplicas: '1'
+    originImageName: rabbitmq:3.13.6-management-alpine
+    deploy.cloud.sealos.io/minReplicas: "1"
+    deploy.cloud.sealos.io/maxReplicas: "1"
   labels:
-    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-admin
-    app: ${{ defaults.app_name }}-admin
+    app: ${{ defaults.app_name }}-mq
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-mq
 spec:
   replicas: 1
   revisionHistoryLimit: 1
   selector:
     matchLabels:
-      app: ${{ defaults.app_name }}-admin
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 0
-      maxSurge: 1
+      app: ${{ defaults.app_name }}-mq
+  serviceName: ${{ defaults.app_name }}-mq
   template:
     metadata:
       labels:
-        app: ${{ defaults.app_name }}-admin
+        app: ${{ defaults.app_name }}-mq
     spec:
       automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
       containers:
-        - name: ${{ defaults.app_name }}-admin
-          image: makeplane/plane-admin:v0.22-dev
-          command:
-            - node
-          args:
-            - admin/server.js
-            - admin
-          resources:
-            requests:
-              cpu: 10m
-              memory: 12Mi
-            limits:
-              cpu: 100m
-              memory: 128Mi
-          ports:
-            - containerPort: 3000
+        - name: ${{ defaults.app_name }}-mq
+          image: rabbitmq:3.13.6-management-alpine
           imagePullPolicy: IfNotPresent
-
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              value: plane
+            - name: RABBITMQ_DEFAULT_PASS
+              value: "${{ defaults.rabbitmq_password }}"
+            - name: RABBITMQ_DEFAULT_VHOST
+              value: /
+          ports:
+            - name: amqp
+              containerPort: 5672
+            - name: management
+              containerPort: 15672
+          readinessProbe:
+            tcpSocket:
+              port: 5672
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 5672
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          startupProbe:
+            tcpSocket:
+              port: 5672
+            failureThreshold: 30
+            periodSeconds: 10
+          volumeMounts:
+            - name: vn-varvn-libvn-rabbitmq
+              mountPath: /var/lib/rabbitmq
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 20m
+              memory: 25Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: vn-varvn-libvn-rabbitmq
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+        storageClassName: openebs-backup
 
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: ${{ defaults.app_name }}-admin
+  name: ${{ defaults.app_name }}-mq
   labels:
-    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-admin
+    app: ${{ defaults.app_name }}-mq
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-mq
 spec:
   ports:
-    - port: 3000
+    - name: amqp
+      port: 5672
+      targetPort: 5672
+    - name: management
+      port: 15672
+      targetPort: 15672
   selector:
-    app: ${{ defaults.app_name }}-admin
+    app: ${{ defaults.app_name }}-mq
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${{ defaults.app_name }}-api-migrate
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      automountServiceAccountToken: false
+      initContainers:
+        - name: wait-for-plane-deps
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              PG_SERVICE="${{ defaults.app_name }}-pg-postgresql.${{ SEALOS_NAMESPACE }}.svc"
+              REDIS_SERVICE="${{ defaults.app_name }}-redis-redis.${{ SEALOS_NAMESPACE }}.svc"
+              MQ_SERVICE="${{ defaults.app_name }}-mq.${{ SEALOS_NAMESPACE }}.svc"
+              for i in $(seq 1 180); do
+                if nc -z -w 2 "${PG_SERVICE}" 5432 \
+                  && nc -z -w 2 "${REDIS_SERVICE}" 6379 \
+                  && nc -z -w 2 "${MQ_SERVICE}" 5672; then
+                  exit 0
+                fi
+                sleep 2
+              done
+              nc -z -w 2 "${PG_SERVICE}" 5432
+              nc -z -w 2 "${REDIS_SERVICE}" 6379
+              nc -z -w 2 "${MQ_SERVICE}" 5672
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 20m
+              memory: 25Mi
+      containers:
+        - name: ${{ defaults.app_name }}-api-migrate
+          image: artifacts.plane.so/makeplane/plane-backend:v1.3.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - ./bin/docker-entrypoint-migrator.sh
+          envFrom:
+            - configMapRef:
+                name: ${{ defaults.app_name }}-app-vars
+                optional: false
+          env:
+            - name: SECRET_KEY
+              value: "${{ defaults.secret_key }}"
+            - name: LIVE_SERVER_SECRET_KEY
+              value: "${{ defaults.live_server_secret_key }}"
+            - name: PG_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: host
+            - name: PG_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: port
+            - name: PG_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: username
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: password
+            - name: DATABASE_URL
+              value: "postgresql://$(PG_USERNAME):$(PG_PASSWORD)@$(PG_HOST):$(PG_PORT)/plane"
+            - name: REDIS_HOST
+              value: "${{ defaults.app_name }}-redis-redis.${{ SEALOS_NAMESPACE }}.svc"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-redis-conn-credential
+                  key: password
+            - name: REDIS_URL
+              value: "redis://:$(REDIS_PASSWORD)@$(REDIS_HOST):$(REDIS_PORT)/"
+            - name: AMQP_URL
+              value: "amqp://plane:${{ defaults.rabbitmq_password }}@${{ defaults.app_name }}-mq.${{ SEALOS_NAMESPACE }}.svc:5672/"
+            - name: S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: object-storage-key
+                  key: accessKey
+            - name: AWS_ACCESS_KEY_ID
+              value: "$(S3_ACCESS_KEY_ID)"
+            - name: S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: object-storage-key
+                  key: secretKey
+            - name: AWS_SECRET_ACCESS_KEY
+              value: "$(S3_SECRET_ACCESS_KEY)"
+            - name: S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: object-storage-key-${{ SEALOS_SERVICE_ACCOUNT }}-${{ defaults.app_name }}-private
+                  key: bucket
+            - name: AWS_S3_BUCKET_NAME
+              value: "$(S3_BUCKET)"
+            - name: BACKEND_STORAGE_MINIO_EXTERNAL_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: object-storage-key
+                  key: external
+            - name: AWS_S3_ENDPOINT_URL
+              value: "https://$(BACKEND_STORAGE_MINIO_EXTERNAL_ENDPOINT)"
+          resources:
+            limits:
+              cpu: 500m
+              memory: 1000Mi
+            requests:
+              cpu: 50m
+              memory: 50Mi
+      restartPolicy: OnFailure
+  ttlSecondsAfterFinished: 300
 
 ---
 apiVersion: apps/v1
@@ -427,12 +604,12 @@ kind: Deployment
 metadata:
   name: ${{ defaults.app_name }}-api
   annotations:
-    originImageName: makeplane/plane-backend:v0.22-dev
-    deploy.cloud.sealos.io/minReplicas: '1'
-    deploy.cloud.sealos.io/maxReplicas: '1'
+    originImageName: artifacts.plane.so/makeplane/plane-backend:v1.3.1
+    deploy.cloud.sealos.io/minReplicas: "1"
+    deploy.cloud.sealos.io/maxReplicas: "1"
   labels:
-    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-api
     app: ${{ defaults.app_name }}-api
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-api
 spec:
   replicas: 1
   revisionHistoryLimit: 1
@@ -450,103 +627,144 @@ spec:
         app: ${{ defaults.app_name }}-api
     spec:
       automountServiceAccountToken: false
+      initContainers:
+        - name: wait-for-plane-deps
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              PG_SERVICE="${{ defaults.app_name }}-pg-postgresql.${{ SEALOS_NAMESPACE }}.svc"
+              REDIS_SERVICE="${{ defaults.app_name }}-redis-redis.${{ SEALOS_NAMESPACE }}.svc"
+              MQ_SERVICE="${{ defaults.app_name }}-mq.${{ SEALOS_NAMESPACE }}.svc"
+              for i in $(seq 1 180); do
+                if nc -z -w 2 "${PG_SERVICE}" 5432 \
+                  && nc -z -w 2 "${REDIS_SERVICE}" 6379 \
+                  && nc -z -w 2 "${MQ_SERVICE}" 5672; then
+                  exit 0
+                fi
+                sleep 2
+              done
+              nc -z -w 2 "${PG_SERVICE}" 5432
+              nc -z -w 2 "${REDIS_SERVICE}" 6379
+              nc -z -w 2 "${MQ_SERVICE}" 5672
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 20m
+              memory: 25Mi
       containers:
         - name: ${{ defaults.app_name }}-api
-          image: makeplane/plane-backend:v0.22-dev
+          image: artifacts.plane.so/makeplane/plane-backend:v1.3.1
+          imagePullPolicy: IfNotPresent
           command:
             - ./bin/docker-entrypoint-api.sh
+          envFrom:
+            - configMapRef:
+                name: ${{ defaults.app_name }}-app-vars
+                optional: false
           env:
-            - name: DEBUG
-              value: "0"
-            - name: DOCKERIZED
-              value: "1"
-            - name: GUNICORN_WORKERS
-              value: "1"
-            - name: WEB_URL
-              value: "https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}"
-            - name: CORS_ALLOWED_ORIGINS
-              value: "http://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }},https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}"
-            - name: REDIS_PORT
+            - name: SECRET_KEY
+              value: "${{ defaults.secret_key }}"
+            - name: LIVE_SERVER_SECRET_KEY
+              value: "${{ defaults.live_server_secret_key }}"
+            - name: PG_HOST
               valueFrom:
                 secretKeyRef:
-                  name: ${{ defaults.app_name }}-redis-conn-credential
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: host
+            - name: PG_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
                   key: port
-            - name: REDIS_USER
+            - name: PG_USERNAME
               valueFrom:
                 secretKeyRef:
-                  name: ${{ defaults.app_name }}-redis-conn-credential
+                  name: ${{ defaults.app_name }}-pg-conn-credential
                   key: username
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: password
+            - name: DATABASE_URL
+              value: "postgresql://$(PG_USERNAME):$(PG_PASSWORD)@$(PG_HOST):$(PG_PORT)/plane"
+            - name: REDIS_HOST
+              value: "${{ defaults.app_name }}-redis-redis.${{ SEALOS_NAMESPACE }}.svc"
+            - name: REDIS_PORT
+              value: "6379"
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: ${{ defaults.app_name }}-redis-conn-credential
                   key: password
             - name: REDIS_URL
-              value: "redis://$(REDIS_USER):$(REDIS_PASSWORD)@${{ defaults.app_name }}-redis-redis.${{ SEALOS_NAMESPACE }}.svc:$(REDIS_PORT)"
-            - name: DATABASE_PORT
-              valueFrom:
-                secretKeyRef:
-                  name: ${{ defaults.app_name }}-pg-conn-credential
-                  key: port
-            - name: DATABASE_USER
-              valueFrom:
-                secretKeyRef:
-                  name: ${{ defaults.app_name }}-pg-conn-credential
-                  key: username
-            - name: DATABASE_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: ${{ defaults.app_name }}-pg-conn-credential
-                  key: password
-            - name: DATABASE_URL
-              value: "postgresql://$(DATABASE_USER):$(DATABASE_PASSWORD)@${{ defaults.app_name }}-pg-postgresql.${{ SEALOS_NAMESPACE }}.svc:$(DATABASE_PORT)/plane"
-            - name: SECRET_KEY
-              value: "NjBncDBieWZ6MmR2ZmZhNDVjeGwyMHAxc2N5OXhicGY2ZDhjNXkwZ2VlamdreXAxYjU="
-            - name: FILE_SIZE_LIMIT
-              value: "5242880"
-            - name: AWS_S3_BUCKET_NAME
-              value: "upload"
-            - name: AWS_SECRET_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: object-storage-key
-                  key: secretKey
-            - name: AWS_ACCESS_KEY_ID
+              value: "redis://:$(REDIS_PASSWORD)@$(REDIS_HOST):$(REDIS_PORT)/"
+            - name: AMQP_URL
+              value: "amqp://plane:${{ defaults.rabbitmq_password }}@${{ defaults.app_name }}-mq.${{ SEALOS_NAMESPACE }}.svc:5672/"
+            - name: S3_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
                   name: object-storage-key
                   key: accessKey
-            - name: BACKEND_STORAGE_PRIVATE_BUCKET
+            - name: AWS_ACCESS_KEY_ID
+              value: "$(S3_ACCESS_KEY_ID)"
+            - name: S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: object-storage-key
+                  key: secretKey
+            - name: AWS_SECRET_ACCESS_KEY
+              value: "$(S3_SECRET_ACCESS_KEY)"
+            - name: S3_BUCKET
               valueFrom:
                 secretKeyRef:
                   name: object-storage-key-${{ SEALOS_SERVICE_ACCOUNT }}-${{ defaults.app_name }}-private
                   key: bucket
-            - name: BACKEND_STORAGE_MINIO_ENDPOINT
+            - name: AWS_S3_BUCKET_NAME
+              value: "$(S3_BUCKET)"
+            - name: BACKEND_STORAGE_MINIO_EXTERNAL_ENDPOINT
               valueFrom:
                 secretKeyRef:
                   name: object-storage-key
-                  key: internal
+                  key: external
             - name: AWS_S3_ENDPOINT_URL
-              value: "http://$(BACKEND_STORAGE_MINIO_ENDPOINT)/$(BACKEND_STORAGE_PRIVATE_BUCKET)"
-            - name: USE_MINIO
-              value: "0"
-          resources:
-            requests:
-              cpu: 50m
-              memory: 25Mi
-            limits:
-              cpu: 500m
-              memory: 256Mi
+              value: "https://$(BACKEND_STORAGE_MINIO_EXTERNAL_ENDPOINT)"
+          ports:
+            - name: http
+              containerPort: 8000
           readinessProbe:
-            failureThreshold: 30
             httpGet:
               path: /
               port: 8000
-              scheme: HTTP
+            failureThreshold: 30
             periodSeconds: 10
-            successThreshold: 1
             timeoutSeconds: 1
-          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 3
+          startupProbe:
+            httpGet:
+              path: /
+              port: 8000
+            failureThreshold: 30
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 500m
+              memory: 1000Mi
+            requests:
+              cpu: 50m
+              memory: 50Mi
 
 ---
 apiVersion: v1
@@ -554,10 +772,13 @@ kind: Service
 metadata:
   name: ${{ defaults.app_name }}-api
   labels:
+    app: ${{ defaults.app_name }}-api
     cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-api
 spec:
   ports:
-    - port: 8000
+    - name: http
+      port: 8000
+      targetPort: 8000
   selector:
     app: ${{ defaults.app_name }}-api
 
@@ -565,132 +786,14 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ${{ defaults.app_name }}-beat-worker
-  annotations:
-    originImageName: makeplane/plane-backend:v0.22-dev
-    deploy.cloud.sealos.io/minReplicas: '1'
-    deploy.cloud.sealos.io/maxReplicas: '1'
-  labels:
-    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-beat-worker
-    app: ${{ defaults.app_name }}-beat-worker
-spec:
-  replicas: 1
-  revisionHistoryLimit: 1
-  selector:
-    matchLabels:
-      app: ${{ defaults.app_name }}-beat-worker
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 0
-      maxSurge: 1
-  template:
-    metadata:
-      labels:
-        app: ${{ defaults.app_name }}-beat-worker
-    spec:
-      automountServiceAccountToken: false
-      containers:
-        - name: ${{ defaults.app_name }}-beat-worker
-          image: makeplane/plane-backend:v0.22-dev
-          command:
-            - ./bin/docker-entrypoint-beat.sh
-          env:
-            - name: DEBUG
-              value: "0"
-            - name: DOCKERIZED
-              value: "1"
-            - name: GUNICORN_WORKERS
-              value: "1"
-            - name: WEB_URL
-              value: "https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}"
-            - name: CORS_ALLOWED_ORIGINS
-              value: "http://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }},https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}"
-            - name: REDIS_PORT
-              valueFrom:
-                secretKeyRef:
-                  name: ${{ defaults.app_name }}-redis-conn-credential
-                  key: port
-            - name: REDIS_USER
-              valueFrom:
-                secretKeyRef:
-                  name: ${{ defaults.app_name }}-redis-conn-credential
-                  key: username
-            - name: REDIS_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: ${{ defaults.app_name }}-redis-conn-credential
-                  key: password
-            - name: REDIS_URL
-              value: "redis://$(REDIS_USER):$(REDIS_PASSWORD)@${{ defaults.app_name }}-redis-redis.${{ SEALOS_NAMESPACE }}.svc:$(REDIS_PORT)"
-            - name: DATABASE_PORT
-              valueFrom:
-                secretKeyRef:
-                  name: ${{ defaults.app_name }}-pg-conn-credential
-                  key: port
-            - name: DATABASE_USER
-              valueFrom:
-                secretKeyRef:
-                  name: ${{ defaults.app_name }}-pg-conn-credential
-                  key: username
-            - name: DATABASE_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: ${{ defaults.app_name }}-pg-conn-credential
-                  key: password
-            - name: DATABASE_URL
-              value: "postgresql://$(DATABASE_USER):$(DATABASE_PASSWORD)@${{ defaults.app_name }}-pg-postgresql.${{ SEALOS_NAMESPACE }}.svc:$(DATABASE_PORT)/plane"
-            - name: SECRET_KEY
-              value: "NjBncDBieWZ6MmR2ZmZhNDVjeGwyMHAxc2N5OXhicGY2ZDhjNXkwZ2VlamdreXAxYjU="
-            - name: FILE_SIZE_LIMIT
-              value: "5242880"
-            - name: AWS_S3_BUCKET_NAME
-              value: "upload"
-            - name: AWS_SECRET_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: object-storage-key
-                  key: secretKey
-            - name: AWS_ACCESS_KEY_ID
-              valueFrom:
-                secretKeyRef:
-                  name: object-storage-key
-                  key: accessKey
-            - name: BACKEND_STORAGE_PRIVATE_BUCKET
-              valueFrom:
-                secretKeyRef:
-                  name: object-storage-key-${{ SEALOS_SERVICE_ACCOUNT }}-${{ defaults.app_name }}-private
-                  key: bucket
-            - name: BACKEND_STORAGE_MINIO_ENDPOINT
-              valueFrom:
-                secretKeyRef:
-                  name: object-storage-key
-                  key: internal
-            - name: AWS_S3_ENDPOINT_URL
-              value: "http://$(BACKEND_STORAGE_MINIO_ENDPOINT)/$(BACKEND_STORAGE_PRIVATE_BUCKET)"
-            - name: USE_MINIO
-              value: "0"
-          resources:
-            requests:
-              cpu: 20m
-              memory: 25Mi
-            limits:
-              cpu: 200m
-              memory: 256Mi
-          imagePullPolicy: IfNotPresent
-
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
   name: ${{ defaults.app_name }}-worker
   annotations:
-    originImageName: makeplane/plane-backend:v0.22-dev
-    deploy.cloud.sealos.io/minReplicas: '1'
-    deploy.cloud.sealos.io/maxReplicas: '1'
+    originImageName: artifacts.plane.so/makeplane/plane-backend:v1.3.1
+    deploy.cloud.sealos.io/minReplicas: "1"
+    deploy.cloud.sealos.io/maxReplicas: "1"
   labels:
-    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-worker
     app: ${{ defaults.app_name }}-worker
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-worker
 spec:
   replicas: 1
   revisionHistoryLimit: 1
@@ -708,113 +811,134 @@ spec:
         app: ${{ defaults.app_name }}-worker
     spec:
       automountServiceAccountToken: false
+      initContainers:
+        - name: wait-for-api
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              API_SERVICE="${{ defaults.app_name }}-api.${{ SEALOS_NAMESPACE }}.svc"
+              for i in $(seq 1 180); do
+                if nc -z -w 2 "${API_SERVICE}" 8000; then
+                  exit 0
+                fi
+                sleep 2
+              done
+              nc -z -w 2 "${API_SERVICE}" 8000
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 20m
+              memory: 25Mi
       containers:
         - name: ${{ defaults.app_name }}-worker
-          image: makeplane/plane-backend:v0.22-dev
+          image: artifacts.plane.so/makeplane/plane-backend:v1.3.1
+          imagePullPolicy: IfNotPresent
           command:
             - ./bin/docker-entrypoint-worker.sh
+          envFrom:
+            - configMapRef:
+                name: ${{ defaults.app_name }}-app-vars
+                optional: false
           env:
-            - name: DEBUG
-              value: "0"
-            - name: DOCKERIZED
-              value: "1"
-            - name: GUNICORN_WORKERS
-              value: "1"
-            - name: WEB_URL
-              value: "https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}"
-            - name: CORS_ALLOWED_ORIGINS
-              value: "http://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }},https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}"
-            - name: REDIS_PORT
+            - name: SECRET_KEY
+              value: "${{ defaults.secret_key }}"
+            - name: LIVE_SERVER_SECRET_KEY
+              value: "${{ defaults.live_server_secret_key }}"
+            - name: PG_HOST
               valueFrom:
                 secretKeyRef:
-                  name: ${{ defaults.app_name }}-redis-conn-credential
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: host
+            - name: PG_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
                   key: port
-            - name: REDIS_USER
+            - name: PG_USERNAME
               valueFrom:
                 secretKeyRef:
-                  name: ${{ defaults.app_name }}-redis-conn-credential
+                  name: ${{ defaults.app_name }}-pg-conn-credential
                   key: username
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: password
+            - name: DATABASE_URL
+              value: "postgresql://$(PG_USERNAME):$(PG_PASSWORD)@$(PG_HOST):$(PG_PORT)/plane"
+            - name: REDIS_HOST
+              value: "${{ defaults.app_name }}-redis-redis.${{ SEALOS_NAMESPACE }}.svc"
+            - name: REDIS_PORT
+              value: "6379"
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: ${{ defaults.app_name }}-redis-conn-credential
                   key: password
             - name: REDIS_URL
-              value: "redis://$(REDIS_USER):$(REDIS_PASSWORD)@${{ defaults.app_name }}-redis-redis.${{ SEALOS_NAMESPACE }}.svc:$(REDIS_PORT)"
-            - name: DATABASE_PORT
-              valueFrom:
-                secretKeyRef:
-                  name: ${{ defaults.app_name }}-pg-conn-credential
-                  key: port
-            - name: DATABASE_USER
-              valueFrom:
-                secretKeyRef:
-                  name: ${{ defaults.app_name }}-pg-conn-credential
-                  key: username
-            - name: DATABASE_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: ${{ defaults.app_name }}-pg-conn-credential
-                  key: password
-            - name: DATABASE_URL
-              value: "postgresql://$(DATABASE_USER):$(DATABASE_PASSWORD)@${{ defaults.app_name }}-pg-postgresql.${{ SEALOS_NAMESPACE }}.svc:$(DATABASE_PORT)/plane"
-            - name: SECRET_KEY
-              value: "NjBncDBieWZ6MmR2ZmZhNDVjeGwyMHAxc2N5OXhicGY2ZDhjNXkwZ2VlamdreXAxYjU="
-            - name: FILE_SIZE_LIMIT
-              value: "5242880"
-            - name: AWS_S3_BUCKET_NAME
-              value: "upload"
-            - name: AWS_SECRET_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: object-storage-key
-                  key: secretKey
-            - name: AWS_ACCESS_KEY_ID
+              value: "redis://:$(REDIS_PASSWORD)@$(REDIS_HOST):$(REDIS_PORT)/"
+            - name: AMQP_URL
+              value: "amqp://plane:${{ defaults.rabbitmq_password }}@${{ defaults.app_name }}-mq.${{ SEALOS_NAMESPACE }}.svc:5672/"
+            - name: S3_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
                   name: object-storage-key
                   key: accessKey
-            - name: BACKEND_STORAGE_PRIVATE_BUCKET
+            - name: AWS_ACCESS_KEY_ID
+              value: "$(S3_ACCESS_KEY_ID)"
+            - name: S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: object-storage-key
+                  key: secretKey
+            - name: AWS_SECRET_ACCESS_KEY
+              value: "$(S3_SECRET_ACCESS_KEY)"
+            - name: S3_BUCKET
               valueFrom:
                 secretKeyRef:
                   name: object-storage-key-${{ SEALOS_SERVICE_ACCOUNT }}-${{ defaults.app_name }}-private
                   key: bucket
-            - name: BACKEND_STORAGE_MINIO_ENDPOINT
+            - name: AWS_S3_BUCKET_NAME
+              value: "$(S3_BUCKET)"
+            - name: BACKEND_STORAGE_MINIO_EXTERNAL_ENDPOINT
               valueFrom:
                 secretKeyRef:
                   name: object-storage-key
-                  key: internal
+                  key: external
             - name: AWS_S3_ENDPOINT_URL
-              value: "http://$(BACKEND_STORAGE_MINIO_ENDPOINT)/$(BACKEND_STORAGE_PRIVATE_BUCKET)"
-            - name: USE_MINIO
-              value: "0"
+              value: "https://$(BACKEND_STORAGE_MINIO_EXTERNAL_ENDPOINT)"
           resources:
-            requests:
-              cpu: 20m
-              memory: 204Mi
             limits:
-              cpu: 200m
-              memory: 2048Mi
-          imagePullPolicy: IfNotPresent
+              cpu: 500m
+              memory: 1000Mi
+            requests:
+              cpu: 50m
+              memory: 50Mi
 
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ${{ defaults.app_name }}-space
+  name: ${{ defaults.app_name }}-beat-worker
   annotations:
-    originImageName: makeplane/plane-space:v0.22-dev
-    deploy.cloud.sealos.io/minReplicas: '1'
-    deploy.cloud.sealos.io/maxReplicas: '1'
+    originImageName: artifacts.plane.so/makeplane/plane-backend:v1.3.1
+    deploy.cloud.sealos.io/minReplicas: "1"
+    deploy.cloud.sealos.io/maxReplicas: "1"
   labels:
-    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-space
-    app: ${{ defaults.app_name }}-space
+    app: ${{ defaults.app_name }}-beat-worker
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-beat-worker
 spec:
   replicas: 1
   revisionHistoryLimit: 1
   selector:
     matchLabels:
-      app: ${{ defaults.app_name }}-space
+      app: ${{ defaults.app_name }}-beat-worker
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -823,38 +947,238 @@ spec:
   template:
     metadata:
       labels:
-        app: ${{ defaults.app_name }}-space
+        app: ${{ defaults.app_name }}-beat-worker
     spec:
       automountServiceAccountToken: false
-      containers:
-        - name: ${{ defaults.app_name }}-space
-          image: makeplane/plane-space:v0.22-dev
-          command:
-            - node
-          args:
-            - space/server.js
-            - space
-          resources:
-            requests:
-              cpu: 10m
-              memory: 12Mi
-            limits:
-              cpu: 100m
-              memory: 128Mi
+      initContainers:
+        - name: wait-for-api
+          image: busybox:1.36
           imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              API_SERVICE="${{ defaults.app_name }}-api.${{ SEALOS_NAMESPACE }}.svc"
+              for i in $(seq 1 180); do
+                if nc -z -w 2 "${API_SERVICE}" 8000; then
+                  exit 0
+                fi
+                sleep 2
+              done
+              nc -z -w 2 "${API_SERVICE}" 8000
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 20m
+              memory: 25Mi
+      containers:
+        - name: ${{ defaults.app_name }}-beat-worker
+          image: artifacts.plane.so/makeplane/plane-backend:v1.3.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - ./bin/docker-entrypoint-beat.sh
+          envFrom:
+            - configMapRef:
+                name: ${{ defaults.app_name }}-app-vars
+                optional: false
+          env:
+            - name: SECRET_KEY
+              value: "${{ defaults.secret_key }}"
+            - name: LIVE_SERVER_SECRET_KEY
+              value: "${{ defaults.live_server_secret_key }}"
+            - name: PG_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: host
+            - name: PG_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: port
+            - name: PG_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: username
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: password
+            - name: DATABASE_URL
+              value: "postgresql://$(PG_USERNAME):$(PG_PASSWORD)@$(PG_HOST):$(PG_PORT)/plane"
+            - name: REDIS_HOST
+              value: "${{ defaults.app_name }}-redis-redis.${{ SEALOS_NAMESPACE }}.svc"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-redis-conn-credential
+                  key: password
+            - name: REDIS_URL
+              value: "redis://:$(REDIS_PASSWORD)@$(REDIS_HOST):$(REDIS_PORT)/"
+            - name: AMQP_URL
+              value: "amqp://plane:${{ defaults.rabbitmq_password }}@${{ defaults.app_name }}-mq.${{ SEALOS_NAMESPACE }}.svc:5672/"
+            - name: S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: object-storage-key
+                  key: accessKey
+            - name: AWS_ACCESS_KEY_ID
+              value: "$(S3_ACCESS_KEY_ID)"
+            - name: S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: object-storage-key
+                  key: secretKey
+            - name: AWS_SECRET_ACCESS_KEY
+              value: "$(S3_SECRET_ACCESS_KEY)"
+            - name: S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: object-storage-key-${{ SEALOS_SERVICE_ACCOUNT }}-${{ defaults.app_name }}-private
+                  key: bucket
+            - name: AWS_S3_BUCKET_NAME
+              value: "$(S3_BUCKET)"
+            - name: BACKEND_STORAGE_MINIO_EXTERNAL_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: object-storage-key
+                  key: external
+            - name: AWS_S3_ENDPOINT_URL
+              value: "https://$(BACKEND_STORAGE_MINIO_EXTERNAL_ENDPOINT)"
+          resources:
+            limits:
+              cpu: 500m
+              memory: 1000Mi
+            requests:
+              cpu: 50m
+              memory: 50Mi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ defaults.app_name }}-live
+  annotations:
+    originImageName: artifacts.plane.so/makeplane/plane-live:v1.3.1
+    deploy.cloud.sealos.io/minReplicas: "1"
+    deploy.cloud.sealos.io/maxReplicas: "1"
+  labels:
+    app: ${{ defaults.app_name }}-live
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-live
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-live
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-live
+    spec:
+      automountServiceAccountToken: false
+      initContainers:
+        - name: wait-for-live-deps
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              REDIS_SERVICE="${{ defaults.app_name }}-redis-redis.${{ SEALOS_NAMESPACE }}.svc"
+              API_SERVICE="${{ defaults.app_name }}-api.${{ SEALOS_NAMESPACE }}.svc"
+              for i in $(seq 1 180); do
+                if nc -z -w 2 "${REDIS_SERVICE}" 6379 \
+                  && nc -z -w 2 "${API_SERVICE}" 8000; then
+                  exit 0
+                fi
+                sleep 2
+              done
+              nc -z -w 2 "${REDIS_SERVICE}" 6379
+              nc -z -w 2 "${API_SERVICE}" 8000
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 20m
+              memory: 25Mi
+      containers:
+        - name: ${{ defaults.app_name }}-live
+          image: artifacts.plane.so/makeplane/plane-live:v1.3.1
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: ${{ defaults.app_name }}-live-vars
+                optional: false
+          env:
+            - name: LIVE_SERVER_SECRET_KEY
+              value: "${{ defaults.live_server_secret_key }}"
+            - name: REDIS_HOST
+              value: "${{ defaults.app_name }}-redis-redis.${{ SEALOS_NAMESPACE }}.svc"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-redis-conn-credential
+                  key: password
+            - name: REDIS_URL
+              value: "redis://:$(REDIS_PASSWORD)@$(REDIS_HOST):$(REDIS_PORT)/"
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          startupProbe:
+            tcpSocket:
+              port: 3000
+            failureThreshold: 30
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 500m
+              memory: 1000Mi
+            requests:
+              cpu: 50m
+              memory: 50Mi
 
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: ${{ defaults.app_name }}-space
+  name: ${{ defaults.app_name }}-live
   labels:
-    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-space
+    app: ${{ defaults.app_name }}-live
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-live
 spec:
   ports:
-    - port: 3000
+    - name: http
+      port: 3000
+      targetPort: 3000
   selector:
-    app: ${{ defaults.app_name }}-space
+    app: ${{ defaults.app_name }}-live
 
 ---
 apiVersion: apps/v1
@@ -862,12 +1186,12 @@ kind: Deployment
 metadata:
   name: ${{ defaults.app_name }}-web
   annotations:
-    originImageName: makeplane/plane-frontend:v0.22-dev
-    deploy.cloud.sealos.io/minReplicas: '1'
-    deploy.cloud.sealos.io/maxReplicas: '1'
+    originImageName: artifacts.plane.so/makeplane/plane-frontend:v1.3.1
+    deploy.cloud.sealos.io/minReplicas: "1"
+    deploy.cloud.sealos.io/maxReplicas: "1"
   labels:
-    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-web
     app: ${{ defaults.app_name }}-web
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-web
 spec:
   replicas: 1
   revisionHistoryLimit: 1
@@ -885,22 +1209,59 @@ spec:
         app: ${{ defaults.app_name }}-web
     spec:
       automountServiceAccountToken: false
+      initContainers:
+        - name: wait-for-api
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              API_SERVICE="${{ defaults.app_name }}-api.${{ SEALOS_NAMESPACE }}.svc"
+              for i in $(seq 1 180); do
+                if nc -z -w 2 "${API_SERVICE}" 8000; then
+                  exit 0
+                fi
+                sleep 2
+              done
+              nc -z -w 2 "${API_SERVICE}" 8000
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 20m
+              memory: 25Mi
       containers:
         - name: ${{ defaults.app_name }}-web
-          image: makeplane/plane-frontend:v0.22-dev
-          command:
-            - node
-          args:
-            - web/server.js
-            - web
-          resources:
-            requests:
-              cpu: 10m
-              memory: 12Mi
-            limits:
-              cpu: 100m
-              memory: 128Mi
+          image: artifacts.plane.so/makeplane/plane-frontend:v1.3.1
           imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          startupProbe:
+            tcpSocket:
+              port: 3000
+            failureThreshold: 30
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 500m
+              memory: 1000Mi
+            requests:
+              cpu: 50m
+              memory: 50Mi
 
 ---
 apiVersion: v1
@@ -908,12 +1269,213 @@ kind: Service
 metadata:
   name: ${{ defaults.app_name }}-web
   labels:
+    app: ${{ defaults.app_name }}-web
     cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-web
 spec:
   ports:
-    - port: 3000
+    - name: http
+      port: 3000
+      targetPort: 3000
   selector:
     app: ${{ defaults.app_name }}-web
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ defaults.app_name }}-space
+  annotations:
+    originImageName: artifacts.plane.so/makeplane/plane-space:v1.3.1
+    deploy.cloud.sealos.io/minReplicas: "1"
+    deploy.cloud.sealos.io/maxReplicas: "1"
+  labels:
+    app: ${{ defaults.app_name }}-space
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-space
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-space
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-space
+    spec:
+      automountServiceAccountToken: false
+      initContainers:
+        - name: wait-for-api
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              API_SERVICE="${{ defaults.app_name }}-api.${{ SEALOS_NAMESPACE }}.svc"
+              for i in $(seq 1 180); do
+                if nc -z -w 2 "${API_SERVICE}" 8000; then
+                  exit 0
+                fi
+                sleep 2
+              done
+              nc -z -w 2 "${API_SERVICE}" 8000
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 20m
+              memory: 25Mi
+      containers:
+        - name: ${{ defaults.app_name }}-space
+          image: artifacts.plane.so/makeplane/plane-space:v1.3.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          startupProbe:
+            tcpSocket:
+              port: 3000
+            failureThreshold: 30
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 500m
+              memory: 1000Mi
+            requests:
+              cpu: 50m
+              memory: 50Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-space
+  labels:
+    app: ${{ defaults.app_name }}-space
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-space
+spec:
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+  selector:
+    app: ${{ defaults.app_name }}-space
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ defaults.app_name }}-admin
+  annotations:
+    originImageName: artifacts.plane.so/makeplane/plane-admin:v1.3.1
+    deploy.cloud.sealos.io/minReplicas: "1"
+    deploy.cloud.sealos.io/maxReplicas: "1"
+  labels:
+    app: ${{ defaults.app_name }}-admin
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-admin
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-admin
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-admin
+    spec:
+      automountServiceAccountToken: false
+      initContainers:
+        - name: wait-for-api
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              API_SERVICE="${{ defaults.app_name }}-api.${{ SEALOS_NAMESPACE }}.svc"
+              for i in $(seq 1 180); do
+                if nc -z -w 2 "${API_SERVICE}" 8000; then
+                  exit 0
+                fi
+                sleep 2
+              done
+              nc -z -w 2 "${API_SERVICE}" 8000
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 20m
+              memory: 25Mi
+      containers:
+        - name: ${{ defaults.app_name }}-admin
+          image: artifacts.plane.so/makeplane/plane-admin:v1.3.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          startupProbe:
+            tcpSocket:
+              port: 3000
+            failureThreshold: 30
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 500m
+              memory: 1000Mi
+            requests:
+              cpu: 50m
+              memory: 50Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-admin
+  labels:
+    app: ${{ defaults.app_name }}-admin
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-admin
+spec:
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+  selector:
+    app: ${{ defaults.app_name }}-admin
 
 ---
 apiVersion: networking.k8s.io/v1
@@ -924,10 +1486,6 @@ metadata:
     cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-web
     cloud.sealos.io/app-deploy-manager-domain: ${{ defaults.app_host }}
   annotations:
-    higress.io/response-header-control-remove: X-Frame-Options
-    higress.io/response-header-control-update: |
-      Content-Security-Policy "default-src * blob: data: *.${{ SEALOS_CLOUD_DOMAIN }} ${{ SEALOS_CLOUD_DOMAIN }}; img-src * data: blob: resource: *.${{ SEALOS_CLOUD_DOMAIN }} ${{ SEALOS_CLOUD_DOMAIN }}; connect-src * wss: blob: resource:; style-src 'self' 'unsafe-inline' blob: *.${{ SEALOS_CLOUD_DOMAIN }} ${{ SEALOS_CLOUD_DOMAIN }} resource:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: *.${{ SEALOS_CLOUD_DOMAIN }} ${{ SEALOS_CLOUD_DOMAIN }} resource: *.baidu.com *.bdstatic.com; frame-src 'self' *.${{ SEALOS_CLOUD_DOMAIN }} ${{ SEALOS_CLOUD_DOMAIN }} mailto: tel: weixin: mtt: *.baidu.com; frame-ancestors 'self' https://${{ SEALOS_CLOUD_DOMAIN }} https://*.${{ SEALOS_CLOUD_DOMAIN }}"
-      X-Xss-Protection "1; mode=block"
     kubernetes.io/ingress.class: nginx
     nginx.ingress.kubernetes.io/proxy-body-size: 32m
     nginx.ingress.kubernetes.io/server-snippet: |
@@ -940,9 +1498,6 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-send-timeout: '300'
     nginx.ingress.kubernetes.io/proxy-read-timeout: '300'
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      more_clear_headers "X-Frame-Options:";
-      more_set_headers "Content-Security-Policy: default-src * blob: data: *.${{ SEALOS_CLOUD_DOMAIN }} ${{ SEALOS_CLOUD_DOMAIN }}; img-src * data: blob: resource: *.${{ SEALOS_CLOUD_DOMAIN }} ${{ SEALOS_CLOUD_DOMAIN }}; connect-src * wss: blob: resource:; style-src 'self' 'unsafe-inline' blob: *.${{ SEALOS_CLOUD_DOMAIN }} ${{ SEALOS_CLOUD_DOMAIN }} resource:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: *.${{ SEALOS_CLOUD_DOMAIN }} ${{ SEALOS_CLOUD_DOMAIN }} resource: *.baidu.com *.bdstatic.com; frame-src 'self' *.${{ SEALOS_CLOUD_DOMAIN }} ${{ SEALOS_CLOUD_DOMAIN }} mailto: tel: weixin: mtt: *.baidu.com; frame-ancestors 'self' https://${{ SEALOS_CLOUD_DOMAIN }} https://*.${{ SEALOS_CLOUD_DOMAIN }}";
-      more_set_headers "X-Xss-Protection: 1; mode=block";
       if ($request_uri ~* \.(js|css|gif|jpe?g|png)) {
         expires 30d;
         add_header Cache-Control "public";
@@ -959,6 +1514,41 @@ spec:
                 name: ${{ defaults.app_name }}-web
                 port:
                   number: 3000
+  tls:
+    - hosts:
+        - ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      secretName: ${{ SEALOS_CERT_SECRET_NAME }}
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${{ defaults.app_name }}-api
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-api
+    cloud.sealos.io/app-deploy-manager-domain: ${{ defaults.app_host }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/server-snippet: |
+      client_header_buffer_size 64k;
+      large_client_header_buffers 4 128k;
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/client-body-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '300'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '300'
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      if ($request_uri ~* \.(js|css|gif|jpe?g|png)) {
+        expires 30d;
+        add_header Cache-Control "public";
+      }
+spec:
+  rules:
+    - host: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      http:
+        paths:
           - pathType: Prefix
             path: /api
             backend:
@@ -973,6 +1563,83 @@ spec:
                 name: ${{ defaults.app_name }}-api
                 port:
                   number: 8000
+  tls:
+    - hosts:
+        - ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      secretName: ${{ SEALOS_CERT_SECRET_NAME }}
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${{ defaults.app_name }}-live
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-live
+    cloud.sealos.io/app-deploy-manager-domain: ${{ defaults.app_host }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/server-snippet: |
+      client_header_buffer_size 64k;
+      large_client_header_buffers 4 128k;
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/client-body-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '300'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '300'
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      if ($request_uri ~* \.(js|css|gif|jpe?g|png)) {
+        expires 30d;
+        add_header Cache-Control "public";
+      }
+spec:
+  rules:
+    - host: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      http:
+        paths:
+          - pathType: Prefix
+            path: /live/
+            backend:
+              service:
+                name: ${{ defaults.app_name }}-live
+                port:
+                  number: 3000
+  tls:
+    - hosts:
+        - ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      secretName: ${{ SEALOS_CERT_SECRET_NAME }}
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${{ defaults.app_name }}-space
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-space
+    cloud.sealos.io/app-deploy-manager-domain: ${{ defaults.app_host }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/server-snippet: |
+      client_header_buffer_size 64k;
+      large_client_header_buffers 4 128k;
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/client-body-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '300'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '300'
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      if ($request_uri ~* \.(js|css|gif|jpe?g|png)) {
+        expires 30d;
+        add_header Cache-Control "public";
+      }
+spec:
+  rules:
+    - host: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      http:
+        paths:
           - pathType: Prefix
             path: /spaces
             backend:
@@ -980,6 +1647,44 @@ spec:
                 name: ${{ defaults.app_name }}-space
                 port:
                   number: 3000
+  tls:
+    - hosts:
+        - ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      secretName: ${{ SEALOS_CERT_SECRET_NAME }}
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${{ defaults.app_name }}-admin
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-admin
+    cloud.sealos.io/app-deploy-manager-domain: ${{ defaults.app_host }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/server-snippet: |
+      client_header_buffer_size 64k;
+      large_client_header_buffers 4 128k;
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/client-body-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '300'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '300'
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      if ($request_uri = "/god-mode") {
+        return 301 /god-mode/;
+      }
+      if ($request_uri ~* \.(js|css|gif|jpe?g|png)) {
+        expires 30d;
+        add_header Cache-Control "public";
+      }
+spec:
+  rules:
+    - host: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      http:
+        paths:
           - pathType: Prefix
             path: /god-mode
             backend:
@@ -1003,6 +1708,6 @@ spec:
   data:
     url: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
   displayType: normal
-  icon: "https://avatars.githubusercontent.com/u/115727700?s=48&v=4"
+  icon: "https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/plane/logo.png"
   name: Plane
   type: iframe

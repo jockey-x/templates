@@ -1,0 +1,214 @@
+apiVersion: app.sealos.io/v1
+kind: Template
+metadata:
+  name: zookeeper
+spec:
+  title: 'Apache ZooKeeper'
+  url: 'https://zookeeper.apache.org/'
+  gitRepo: 'https://github.com/apache/zookeeper'
+  author: 'Sealos'
+  description: 'Apache ZooKeeper is a centralized service for distributed coordination, configuration, naming, and group membership.'
+  readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/zookeeper/README.md'
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/zookeeper/logo.svg'
+  templateType: inline
+  locale: en
+  i18n:
+    zh:
+      description: 'Apache ZooKeeper 是一个面向分布式系统的集中式协调服务，提供配置管理、命名服务、分布式同步和组成员管理能力。'
+      readme: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/zookeeper/README_zh.md'
+  categories:
+    - database
+  defaults:
+    app_name:
+      type: string
+      value: zookeeper
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${{ defaults.app_name }}
+  annotations:
+    originImageName: quay-kufddygt.sealoshzh.site/u-002/zookeeper:3.7.2
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    app: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  minReadySeconds: 10
+  serviceName: ${{ defaults.app_name }}
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 10
+      initContainers:
+        - name: init-permissions
+          image: quay-kufddygt.sealoshzh.site/u-002/zookeeper:3.7.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - mkdir -p /data /datalog /logs && chown -R zookeeper:zookeeper /data /datalog /logs
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: vn-data
+              mountPath: /data
+            - name: vn-datalog
+              mountPath: /datalog
+            - name: vn-logs
+              mountPath: /logs
+      containers:
+        - name: ${{ defaults.app_name }}
+          image: quay-kufddygt.sealoshzh.site/u-002/zookeeper:3.7.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ZOO_CLIENT_PORT
+              value: '2181'
+            - name: ZOO_TICK_TIME
+              value: '2000'
+            - name: ZOO_INIT_LIMIT
+              value: '10'
+            - name: ZOO_SYNC_LIMIT
+              value: '5'
+            - name: ZOO_ADMIN_SERVER_PORT
+              value: '8080'
+            - name: ZOO_EXTRA_CONF
+              value: |
+                autopurge.purgeInterval=1
+                autopurge.snapRetainCount=3
+            - name: JVMFLAGS
+              value: -Xmx128m
+          ports:
+            - containerPort: 2181
+              name: client
+              protocol: TCP
+            - containerPort: 2888
+              name: peer
+              protocol: TCP
+            - containerPort: 3888
+              name: election
+              protocol: TCP
+            - containerPort: 8080
+              name: admin
+              protocol: TCP
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - python3 -c "import socket; s=socket.create_connection(('127.0.0.1', 2181), 2); s.sendall(b'ruok'); raise SystemExit(0 if b'imok' in s.recv(16) else 1)"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 18
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - python3 -c "import socket; s=socket.create_connection(('127.0.0.1', 2181), 2); s.sendall(b'ruok'); raise SystemExit(0 if b'imok' in s.recv(16) else 1)"
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - python3 -c "import socket; s=socket.create_connection(('127.0.0.1', 2181), 2); s.sendall(b'ruok'); raise SystemExit(0 if b'imok' in s.recv(16) else 1)"
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 20m
+              memory: 25Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          volumeMounts:
+            - name: vn-data
+              mountPath: /data
+            - name: vn-datalog
+              mountPath: /datalog
+            - name: vn-logs
+              mountPath: /logs
+  volumeClaimTemplates:
+    - metadata:
+        name: vn-data
+        annotations:
+          path: /data
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: vn-datalog
+        annotations:
+          path: /datalog
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: vn-logs
+        annotations:
+          path: /logs
+          value: '1'
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    app: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  type: NodePort
+  ports:
+    - name: client
+      port: 2181
+      targetPort: 2181
+      protocol: TCP
+  selector:
+    app: ${{ defaults.app_name }}
+
+---
+apiVersion: app.sealos.io/v1
+kind: App
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  data:
+    url: zookeeper://${{ defaults.app_name }}.${{ SEALOS_NAMESPACE }}.svc.cluster.local:2181
+  displayType: normal
+  icon: 'https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/zookeeper/logo.svg'
+  name: Apache ZooKeeper
+  type: link

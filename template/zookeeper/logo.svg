@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Apache ZooKeeper">
+  <rect width="128" height="128" rx="24" fill="#2d3748"/>
+  <path d="M31 82c10-24 26-42 51-55 6-3 12 3 9 9-12 25-31 42-56 52-4 2-7-2-4-6Z" fill="#f6ad55"/>
+  <path d="M43 87c20-8 35-23 45-43-14 11-27 23-39 39l-6 4Z" fill="#fbd38d"/>
+  <circle cx="80" cy="35" r="4" fill="#2d3748"/>
+  <path d="M29 97h70" stroke="#edf2f7" stroke-width="8" stroke-linecap="round"/>
+  <path d="M40 103h48" stroke="#a0aec0" stroke-width="5" stroke-linecap="round"/>
+  <text x="64" y="66" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" fill="#edf2f7">ZK</text>
+</svg>
