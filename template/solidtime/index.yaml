@@ -9,7 +9,7 @@ spec:
   author: "Sealos"
   description: "A modern open source time tracking application for freelancers, agencies, projects, reports, and team collaboration."
   readme: "https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/solidtime/README.md"
-  icon: "https://avatars.githubusercontent.com/u/156823565?s=48&v=4"
+  icon: "https://raw.githubusercontent.com/labring-actions/templates/kb-0.9/template/solidtime/logo.png"
   templateType: inline
   locale: en
   i18n:
@@ -391,6 +391,10 @@ spec:
             - -c
             - |
               set -eu
+              if [ ! -s storage/oauth-private.key ] || [ ! -s storage/oauth-public.key ]; then
+                php artisan passport:keys --force
+              fi
+              chmod 0600 storage/oauth-private.key storage/oauth-public.key 2>/dev/null || true
               php artisan migrate --force
               set +e
               output="$(printf '%s\n' "${ADMIN_PASSWORD}" | php artisan admin:user:create "${ADMIN_NAME}" "${ADMIN_EMAIL}" --ask-for-password --verify-email 2>&1)"
@@ -408,6 +412,9 @@ spec:
                       "password" => \Illuminate\Support\Facades\Hash::make(getenv("ADMIN_PASSWORD")),
                       "email_verified_at" => $user->email_verified_at ?: now(),
                   ])->save();
+                  app(\App\Service\UserService::class)->makeSureUserHasAtLeastOneOrganization($user);
+                  $user->refresh();
+                  app(\App\Service\UserService::class)->makeSureUserHasCurrentOrganization($user);
                 '
               fi
           env:
